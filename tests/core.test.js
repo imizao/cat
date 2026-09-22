@@ -7,6 +7,7 @@ import { RewardSystem } from '../src/systems/RewardSystem.js';
 import { difficultyForFloor } from '../src/systems/DifficultySystem.js';
 import { EventBus } from '../src/core/EventBus.js';
 import { BattleSystem, BattlePhase } from '../src/battle/BattleSystem.js';
+import { AutoPlaySimulator, summarizeRuns } from '../src/simulation/AutoPlaySimulator.js';
 
 describe('deterministic world', () => {
   it('repeats random sequences', () => { const a = new SeededRandom(123), b = new SeededRandom(123); expect(Array.from({ length: 10 }, () => a.random())).toEqual(Array.from({ length: 10 }, () => b.random())); });
@@ -47,5 +48,28 @@ describe('counterclockwise party battle', () => {
     expect(battle.state.history.filter((entry) => entry.seat).map((entry) => entry.seat)).toEqual([1, 2, 3]);
     expect(battle.state.turn).toBe(2);
     expect(battle.state.phase).toBe(BattlePhase.PLAYER_TURN);
+  });
+});
+
+describe('headless auto-play simulator', () => {
+  it('is deterministic and returns aggregate statistics', () => {
+    const options = { worldSeed: 7788, catId: 'sunstripe', maxFloor: 20 };
+    const first = new AutoPlaySimulator(options).run();
+    const second = new AutoPlaySimulator(options).run();
+    expect(first).toEqual(second);
+    expect(first.reachedFloor).toBeGreaterThanOrEqual(1);
+    expect(summarizeRuns([first, second])).toMatchObject({ runs: 2, best: first.reachedFloor, worst: first.reachedFloor });
+  });
+
+  it('keeps the three cats within the balance regression band', () => {
+    const catIds = ['sunstripe', 'inkwhisker', 'milkdot'];
+    const averages = catIds.map((catId) => {
+      const floors = Array.from({ length: 120 }, (_, index) => {
+        const worldSeed = (20260922 + Math.imul(index + 1, 0x9e3779b1)) >>> 0;
+        return new AutoPlaySimulator({ worldSeed, catId, maxFloor: 100 }).run().reachedFloor;
+      });
+      return floors.reduce((sum, floor) => sum + floor, 0) / floors.length;
+    });
+    expect(Math.max(...averages) / Math.min(...averages)).toBeLessThan(1.35);
   });
 });

@@ -1,7 +1,6 @@
 import { EventBus } from './EventBus.js';
 import { AnimationManager } from './AnimationManager.js';
 import { getCat } from '../data/cats.js';
-import { enemies, bosses } from '../data/enemies.js';
 import { weeklyModifier } from '../data/weekly.js';
 import { FloorType } from '../tower/FloorGenerator.js';
 import { TowerSystem } from '../tower/TowerSystem.js';
@@ -9,7 +8,7 @@ import { SceneManager } from '../render/SceneManager.js';
 import { ActorRenderer } from '../render/ActorRenderer.js';
 import { TowerInterior } from '../render/TowerInterior.js';
 import { BattleSystem, BattlePhase } from '../battle/BattleSystem.js';
-import { scaleEnemy } from '../systems/DifficultySystem.js';
+import { createEnemyParty } from '../systems/EncounterSystem.js';
 import { RewardSystem } from '../systems/RewardSystem.js';
 import { RelicSystem } from '../systems/RelicSystem.js';
 import { SaveSystem } from '../systems/SaveSystem.js';
@@ -74,7 +73,7 @@ export class Game {
   enterFloor(index) {
     if (this.tower.moving || this.mode === 'BATTLE') return;
     this.mode = 'MOVING'; this.ui.hideOverlay(); this.ui.hideCenterAction(); this.ui.hideEnemies(); this.actors.hideEnemies();
-    this.tower.moveTo(index, () => { this.currentFloor = index; this.relics.onFloorEnter(this.player); this.ui.updateHud(this); this.ui.updatePlayer(this.player); this.events.emit('floor:enter', { floor: index }); this.resolveFloor(this.tower.getFloor(index)); this.persist(); });
+    this.tower.moveTo(index, () => { this.currentFloor = index; this.relics.onFloorEnter(this.player, index); this.ui.updateHud(this); this.ui.updatePlayer(this.player); this.events.emit('floor:enter', { floor: index }); this.resolveFloor(this.tower.getFloor(index)); this.persist(); });
   }
   resolveFloor(floor) {
     this.ui.hideCenterAction();
@@ -88,16 +87,7 @@ export class Game {
     this.persist();
   }
   startBattle(floor) {
-    const templates = [...enemies, ...bosses];
-    const enemyParty = floor.enemyIds.map((id, index) => {
-      const template = templates.find((item) => item.id === id) || enemies[0];
-      const bossSeat = floor.type === FloorType.BOSS && index === 1;
-      const elite = floor.type === FloorType.ELITE;
-      return scaleEnemy(template, floor.index, bossSeat || elite, {
-        hp: bossSeat ? .82 : elite ? .67 : .58,
-        attack: bossSeat ? .72 : elite ? .62 : .5
-      });
-    });
+    const enemyParty = createEnemyParty(floor);
     this.mode = 'BATTLE';
     this.tower.setVisible(false); this.interior.show(floor); this.scene.setView('battle');
     this.actors.setPlayerVisible(true); this.actors.showEnemies(enemyParty);

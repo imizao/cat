@@ -39,6 +39,7 @@ export class BattleSystem {
       history: []
     };
     if (player.passiveId === 'stoutHeart') player.shield += 1;
+    if (player.passiveId === 'firstCut') player.shield += 1;
     this.relics.onBattleStart(player);
     this.beginPlayerTurn();
     this.events.emit('battle:start', this.state);
