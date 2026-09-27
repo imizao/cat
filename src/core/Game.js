@@ -1,5 +1,6 @@
 import { EventBus } from './EventBus.js';
 import { AnimationManager } from './AnimationManager.js';
+import { AudioManager } from './AudioManager.js';
 import { getCat } from '../data/cats.js';
 import { weeklyModifier } from '../data/weekly.js';
 import { FloorType } from '../tower/FloorGenerator.js';
@@ -13,12 +14,15 @@ import { RewardSystem } from '../systems/RewardSystem.js';
 import { RelicSystem } from '../systems/RelicSystem.js';
 import { SaveSystem } from '../systems/SaveSystem.js';
 import { UIManager } from '../ui/UIManager.js';
+import { gainHealth, healthOverflowLimit } from '../systems/ResourceRules.js';
 
 export class Game {
   constructor(root) {
     this.events = new EventBus(); this.animations = new AnimationManager(); this.saveSystem = new SaveSystem();
     this.debugEnabled = new URLSearchParams(location.search).get('debug') === '1';
     this.ui = new UIManager(root, this.events, this.debugEnabled);
+    this.audio = new AudioManager(this.events);
+    this.ui.setSound(this.audio.enabled);
     this.scene = new SceneManager(this.ui.refs.scene, this.animations);
     this.interior = new TowerInterior(this.scene.scene, this.animations);
     this.actors = new ActorRenderer(this.scene.scene, this.events, this.animations);
@@ -29,16 +33,23 @@ export class Game {
   }
   bindEvents() {
     this.events.on('ui:action', ({ action, value }) => this.handleAction(action, value));
+    this.events.on('audio:state', ({ enabled }) => this.ui.setSound(enabled));
     this.events.on('battle:update', (state) => { this.ui.updatePlayer(this.player, this.battle); this.ui.updateEnemies(state.enemies, state); });
-    this.events.on('enemy:damage', ({ target, hpLoss, absorbed }) => this.ui.float(hpLoss ? `-${hpLoss}` : `挡 ${absorbed}`, 'damage', target?.encounterIndex));
-    this.events.on('player:damage', ({ hpLoss, absorbed }) => { this.ui.float(hpLoss ? `-${hpLoss}` : `挡 ${absorbed}`, 'damage'); this.ui.updatePlayer(this.player, this.battle); });
+    this.events.on('skill:cast', ({ skill }) => this.ui.showSkill(skill));
+    this.events.on('combat:impact', ({ strong }) => this.ui.impact(strong));
+    this.events.on('enemy:damage', ({ target, hpLoss, absorbed, visualDelay = 0 }) => this.afterVisual(visualDelay, () => this.ui.float(hpLoss ? `-${hpLoss}` : `挡 ${absorbed}`, 'damage', target?.encounterIndex)));
+    this.events.on('player:damage', ({ hpLoss, absorbed, visualDelay = 0 }) => { this.afterVisual(visualDelay, () => this.ui.float(hpLoss ? `-${hpLoss}` : `挡 ${absorbed}`, 'damage')); this.ui.updatePlayer(this.player, this.battle); });
     this.events.on('player:heal', ({ amount }) => { if (amount) this.ui.float(`+${amount}`, 'heal'); });
     this.events.on('player:shield', ({ amount }) => this.ui.float(`+${amount}盾`, 'shield-float'));
     this.events.on('battle:end', () => this.onVictory());
     this.events.on('battle:defeat', () => {
-      this.mode = 'DEFEAT'; this.saveSystem.reset(); this.leaveBattleScene();
-      this.animations.tween({ duration: 500, update: () => {}, complete: () => this.ui.showDefeat(this.currentFloor) });
+      this.mode = 'DEFEAT'; this.saveSystem.reset();
+      this.animations.tween({ duration: 720, update: () => {}, complete: () => { this.leaveBattleScene(); this.ui.showDefeat(this.currentFloor); } });
     });
+  }
+  afterVisual(delay, callback) {
+    if (!delay) { callback(); return; }
+    this.animations.tween({ duration: delay, update: () => {}, complete: callback });
   }
   handleAction(action, value) {
     if (action === 'new') { this.saveSystem.reset(); this.ui.showCatSelect(); return; }
@@ -60,6 +71,7 @@ export class Game {
   startRun(data) {
     this.worldSeed = data.worldSeed; this.currentFloor = data.currentFloor; this.currency = data.currency || 0; this.essence = data.essence || 0;
     this.cat = getCat(data.catId); this.player = { ...data.player, buffs: [], shield: 0, energy: data.player.maxEnergy };
+    this.player.hp = Math.min(this.player.hp, healthOverflowLimit(this.player));
     this.relics = new RelicSystem(); this.rewards = new RewardSystem(this.worldSeed);
     this.battle = new BattleSystem(this.events, this.relics, weeklyModifier);
     if (this.tower) this.scene.scene.remove(this.tower.root);
@@ -73,14 +85,14 @@ export class Game {
   enterFloor(index) {
     if (this.tower.moving || this.mode === 'BATTLE') return;
     this.mode = 'MOVING'; this.ui.hideOverlay(); this.ui.hideCenterAction(); this.ui.hideEnemies(); this.actors.hideEnemies();
-    this.tower.moveTo(index, () => { this.currentFloor = index; this.relics.onFloorEnter(this.player, index); this.ui.updateHud(this); this.ui.updatePlayer(this.player); this.events.emit('floor:enter', { floor: index }); this.resolveFloor(this.tower.getFloor(index)); this.persist(); });
+    this.tower.moveTo(index, () => { this.currentFloor = index; const healed = this.relics.onFloorEnter(this.player, index); this.ui.updateHud(this); this.ui.updatePlayer(this.player); this.ui.showResourceGain('进入楼层 · 生命', healed, this.player.hp, this.player.maxHp); this.events.emit('floor:enter', { floor: index }); this.resolveFloor(this.tower.getFloor(index)); this.persist(); });
   }
   resolveFloor(floor) {
     this.ui.hideCenterAction();
     if ([FloorType.BATTLE, FloorType.ELITE, FloorType.BOSS].includes(floor.type)) return this.startBattle(floor);
     if (floor.type === FloorType.TREASURE) { this.mode = 'REWARD'; this.currentRewards = this.rewards.generate(this.player, floor.index); this.ui.showRewards(this.currentRewards, '檐下藏着微光'); return; }
     this.mode = 'MOMENT';
-    if (floor.type === FloorType.REST) { const before = this.player.hp; this.player.hp = Math.min(this.player.maxHp, this.player.hp + Math.max(2, Math.ceil(this.player.maxHp * .25))); this.ui.updatePlayer(this.player); this.ui.showFloorMoment('月台小憩', `风替你梳顺毛发，回复 ${this.player.hp - before} 生命。`); }
+    if (floor.type === FloorType.REST) { const healed = gainHealth(this.player, Math.max(2, Math.ceil(this.player.maxHp * .25))); this.ui.updatePlayer(this.player); this.ui.showFloorMoment('月台小憩', `风替你梳顺毛发，回复 ${healed} 生命。`); }
     else if (floor.type === FloorType.SHOP) this.ui.showFloorMoment('猫市未开', '摊主正在数鱼干，送你 2 枚作赔。');
     else { this.essence += 1; this.ui.updateHud(this); this.ui.showFloorMoment('檐铃奇遇', '你接住一枚坠落的月屑。月屑 +1。'); }
     if (floor.type === FloorType.SHOP) { this.currency += 2; this.ui.updateHud(this); }
@@ -103,8 +115,9 @@ export class Game {
   }
   onVictory() {
     this.mode = 'VICTORY'; this.currency += this.battle.state.floor % 10 === 0 ? 5 : 1; this.ui.updateHud(this);
-    this.leaveBattleScene();
-    this.animations.tween({ duration: 600, update: () => {}, complete: () => { this.mode = 'REWARD'; this.currentRewards = this.rewards.generate(this.player, this.currentFloor); this.ui.showRewards(this.currentRewards); } });
+    this.animations.tween({ duration: 760, update: () => {}, complete: () => {
+      this.leaveBattleScene(); this.mode = 'REWARD'; this.currentRewards = this.rewards.generate(this.player, this.currentFloor); this.ui.showRewards(this.currentRewards);
+    } });
   }
   leaveBattleScene() {
     this.actors.hideEnemies(); this.actors.setPlayerVisible(false); this.ui.hideEnemies();
@@ -112,8 +125,12 @@ export class Game {
   }
   chooseReward(index) {
     const reward = this.currentRewards[index]; if (!reward) return;
+    this.mode = 'REWARD_RESULT';
+    const before = { hp: this.player.hp, maxHp: this.player.maxHp, energy: this.player.energy, maxEnergy: this.player.maxEnergy };
     this.rewards.apply(reward, this.player); this.events.emit('reward:selected', reward);
-    this.ui.hideOverlay(); this.ui.updatePlayer(this.player); this.persist(); this.enterFloor(this.currentFloor + 1);
+    const after = { hp: this.player.hp, maxHp: this.player.maxHp, energy: this.player.energy, maxEnergy: this.player.maxEnergy };
+    this.ui.hideOverlay(); this.ui.updatePlayer(this.player); this.ui.showRewardResult(reward, before, after); this.persist();
+    this.animations.tween({ duration: 1150, update: () => {}, complete: () => this.enterFloor(this.currentFloor + 1) });
   }
   persist() {
     if (!this.player || this.mode === 'DEFEAT') return;

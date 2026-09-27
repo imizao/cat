@@ -7,6 +7,7 @@ import { FloorGenerator, FloorType } from '../tower/FloorGenerator.js';
 import { createEnemyParty } from '../systems/EncounterSystem.js';
 import { RelicSystem } from '../systems/RelicSystem.js';
 import { RewardSystem } from '../systems/RewardSystem.js';
+import { gainHealth } from '../systems/ResourceRules.js';
 
 const battleTypes = new Set([FloorType.BATTLE, FloorType.ELITE, FloorType.BOSS]);
 
@@ -65,9 +66,8 @@ export class AutoPlaySimulator {
         this.applyBestReward(floorIndex, '战斗奖励');
       } else if (floor.type === FloorType.REST) {
         this.stats.rests++;
-        const before = this.player.hp;
-        this.player.hp = Math.min(this.player.maxHp, this.player.hp + Math.max(2, Math.ceil(this.player.maxHp * .25)));
-        this.log(floorIndex, `休息回复 ${this.player.hp - before}`);
+        const healed = gainHealth(this.player, Math.max(2, Math.ceil(this.player.maxHp * .25)));
+        this.log(floorIndex, `休息回复 ${healed}`);
       } else if (floor.type === FloorType.TREASURE) {
         this.stats.treasures++;
         this.applyBestReward(floorIndex, '宝藏奖励');
@@ -125,6 +125,7 @@ export class AutoPlaySimulator {
   }
 
   chooseTarget() {
+    if (Number.isInteger(this.battle.state.recommendedEnemyIndex)) return this.battle.state.recommendedEnemyIndex;
     let choice = 0;
     let lowestHp = Infinity;
     this.battle.state.enemies.forEach((enemy, index) => {

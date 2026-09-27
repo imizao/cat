@@ -14,7 +14,7 @@ export class UIManager {
         <div class="vignette"></div>
         <header class="hud top-hud">
           <div><span class="eyebrow">月爪天塔</span><strong data-ref="floor">塔基</strong></div>
-          <div class="resources"><span>🐟 <b data-ref="currency">0</b></span><span>✦ <b data-ref="essence">0</b></span></div>
+          <div class="resources"><span>🐟 <b data-ref="currency">0</b></span><span>✦ <b data-ref="essence">0</b></span><button class="sound-toggle" data-ref="sound" data-action="sound" aria-label="关闭声音" title="关闭声音">🔊</button></div>
         </header>
         <aside class="weekly"><span>本周法则</span><b data-ref="weekly">月潮</b></aside>
         <section class="battle-arena is-hidden" data-ref="battleArena">
@@ -33,6 +33,7 @@ export class UIManager {
           <div class="skills" data-ref="skills"></div>
         </section>
         <section class="center-action is-hidden" data-ref="centerAction"></section>
+        <div class="combat-fx" data-ref="combatFx"><span data-ref="skillCallout"></span></div>
         <section class="overlay start-screen" data-ref="overlay"></section>
         <div class="toast-layer" data-ref="toasts"></div>
         <div class="debug is-hidden" data-ref="debug"></div>
@@ -66,6 +67,12 @@ export class UIManager {
     this.refs.floor.textContent = game.currentFloor ? `${game.currentFloor} 层` : '塔基';
     this.refs.currency.textContent = game.currency; this.refs.essence.textContent = game.essence;
   }
+  setSound(enabled) {
+    this.refs.sound.textContent = enabled ? '🔊' : '🔇';
+    this.refs.sound.setAttribute('aria-label', enabled ? '关闭声音' : '开启声音');
+    this.refs.sound.title = enabled ? '关闭声音' : '开启声音';
+    this.refs.sound.classList.toggle('is-muted', !enabled);
+  }
   updatePlayer(player, battle) {
     this.refs.playerHp.textContent = `${player.hp}/${player.maxHp}`; this.refs.energy.textContent = `${player.energy}/${player.maxEnergy}`; this.refs.shield.textContent = player.shield || '—';
     this.refs.playerBuffs.innerHTML = this.buffHTML(player.buffs);
@@ -75,8 +82,9 @@ export class UIManager {
     this.refs.skills.innerHTML = player.skills.map((id) => {
       const skill = skills[id]; const cost = battle ? battle.skillSystem.cost(id, player, battle.state) : skill.cost;
       const disabled = !battle || battle.state?.phase !== 'PLAYER_TURN' || !battle.skillSystem.canUse(id, player, battle.state);
+      const support = skill.effects.every((effect) => effect.target === 'self' && effect.type !== 'damage');
       const bonus = player.skillUpgrades[id] || 0;
-      return `<button class="skill" data-action="skill" data-value="${id}" ${disabled ? 'disabled' : ''}><span>${skill.icon}</span><b>${skill.name}${bonus ? `<sup>+${bonus}</sup>` : ''}</b><small>${skill.shortDescription}</small><em>${cost}⚡</em></button>`;
+      return `<button class="skill" data-action="skill" data-value="${id}" ${disabled ? 'disabled' : ''}><span>${skill.icon}</span><b>${skill.name}${bonus ? `<sup>+${bonus}</sup>` : ''}</b><small>${skill.shortDescription}${support ? ' · 辅助' : ''}</small><em>${cost}⚡</em></button>`;
     }).join('');
   }
   showEnemies(enemies, state, kind) {
@@ -87,9 +95,10 @@ export class UIManager {
   updateEnemies(enemies, state) {
     this.refs.enemySeats.innerHTML = enemies.map((enemy, index) => {
       const selected = state.phase === 'PLAYER_TURN' && state.selectedEnemyIndex === index;
+      const recommended = state.phase === 'PLAYER_TURN' && state.recommendedEnemyIndex === index;
       const active = state.phase === 'ENEMY_TURN' && state.activeActorIndex === index + 1;
       const intent = state.intents?.[index]?.label || '—';
-      return `<button class="enemy-seat seat-${index + 1}${selected ? ' is-target' : ''}${active ? ' is-active' : ''}${enemy.hp <= 0 ? ' is-defeated' : ''}" data-action="target" data-value="${index}" ${enemy.hp <= 0 ? 'disabled' : ''} style="--enemy:${enemy.color}">
+      return `<button class="enemy-seat seat-${index + 1}${selected ? ' is-target' : ''}${recommended ? ' is-recommended' : ''}${active ? ' is-active' : ''}${enemy.hp <= 0 ? ' is-defeated' : ''}" data-action="target" data-value="${index}" ${enemy.hp <= 0 ? 'disabled' : ''} style="--enemy:${enemy.color}" ${recommended ? `title="${state.recommendationReason}" aria-label="推荐攻击 ${enemy.name}：${state.recommendationReason}"` : ''}>
         <span class="seat-no">${index + 2}</span><span class="enemy-avatar">${enemy.icon}</span>
         <span class="enemy-copy"><small>${enemy.title || '守层猫客'}</small><b>${enemy.name}</b></span>
         <span class="enemy-intent">${intent}</span>
@@ -99,6 +108,19 @@ export class UIManager {
     }).join('');
   }
   hideEnemies() { this.refs.battleArena.classList.add('is-hidden'); }
+  showSkill(skill) {
+    const callout = this.refs.skillCallout;
+    callout.innerHTML = `<i>${skill.icon}</i><b>${skill.name}</b>`;
+    callout.classList.remove('is-casting');
+    void callout.offsetWidth;
+    callout.classList.add('is-casting');
+  }
+  impact(strong = false) {
+    const shell = this.root.querySelector('.game-shell');
+    shell.classList.remove('has-impact', 'has-heavy-impact');
+    void shell.offsetWidth;
+    shell.classList.add(strong ? 'has-heavy-impact' : 'has-impact');
+  }
   buffHTML(list = []) { return list.map((item) => `<span>${buffs[item.id]?.name || item.id} ${item.stacks}</span>`).join(''); }
   showClimb() { this.refs.centerAction.classList.remove('is-hidden'); this.refs.centerAction.innerHTML = `<p>塔门已开</p><button data-action="climb">登上一层 <span>↑</span></button><small>也可以向上滑动</small>`; }
   hideCenterAction() { this.refs.centerAction.classList.add('is-hidden'); }
@@ -113,6 +135,22 @@ export class UIManager {
   showDefeat(floor) {
     this.refs.overlay.className = 'overlay defeat-screen';
     this.refs.overlay.innerHTML = `<span class="defeat-paw">爪</span><h2>月色暗了一瞬</h2><p>止步于第 ${floor} 层</p><button class="primary" data-action="new">重新出发</button>`;
+  }
+  showRewardResult(reward, before, after) {
+    const changes = [];
+    if (before.hp !== after.hp || before.maxHp !== after.maxHp) changes.push(`<span class="health">生命 <b>${before.hp}/${before.maxHp}</b><i>→</i><strong>${after.hp}/${after.maxHp}</strong></span>`);
+    if (before.energy !== after.energy || before.maxEnergy !== after.maxEnergy) changes.push(`<span class="energy">能量 <b>${before.energy}/${before.maxEnergy}</b><i>→</i><strong>${after.energy}/${after.maxEnergy}</strong></span>`);
+    const node = document.createElement('div'); node.className = 'reward-result';
+    node.innerHTML = `<em>${reward.icon}</em><small>已获得</small><h3>${reward.name}</h3><div>${changes.join('') || `<span class="effect">${reward.description}</span>`}</div>`;
+    this.refs.toasts.appendChild(node);
+    node.addEventListener('animationend', () => node.remove(), { once: true });
+  }
+  showResourceGain(label, amount, current, maximum) {
+    if (!amount) return;
+    const node = document.createElement('div'); node.className = 'resource-gain';
+    node.innerHTML = `<span>♥</span><p><small>${label} +${amount}</small><b>${current}/${maximum}</b></p>`;
+    this.refs.toasts.appendChild(node);
+    node.addEventListener('animationend', () => node.remove(), { once: true });
   }
   float(text, kind = '', enemyIndex = null) {
     const node = document.createElement('span'); node.className = `float-text ${kind}`; node.textContent = text;

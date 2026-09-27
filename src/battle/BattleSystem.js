@@ -3,6 +3,7 @@ import { EffectSystem } from './EffectSystem.js';
 import { SkillSystem } from './SkillSystem.js';
 import { getEnemyIntent } from './EnemyAI.js';
 import { applyDamage } from './Balance.js';
+import { recommendTarget } from './TargetAdvisor.js';
 import { skills } from '../data/skills.js';
 
 export const BattlePhase = { PLAYER_TURN: 'PLAYER_TURN', ENEMY_TURN: 'ENEMY_TURN', VICTORY: 'VICTORY', DEFEAT: 'DEFEAT' };
@@ -35,6 +36,7 @@ export class BattleSystem {
         ...enemies.map((enemy, index) => ({ type: 'enemy', id: enemy.id, seat: index + 2 }))
       ],
       firstSkill: true, firstDamage: true,
+      supportUsed: false,
       weeklyCostDelta: this.weekly.modifiers.firstSkillCostDelta,
       history: []
     };
@@ -54,6 +56,7 @@ export class BattleSystem {
     state.selectedEnemyIndex = index;
     state.enemy = state.enemies[index];
     state.intent = state.intents[index];
+    this.events.emit('target:selected', { index, target: state.enemy, state });
     this.events.emit('battle:update', state);
     return true;
   }
@@ -70,11 +73,19 @@ export class BattleSystem {
   beginPlayerTurn() {
     const state = this.state;
     state.player.energy = state.player.maxEnergy;
+    state.supportUsed = false;
     this.triggerTurnDamage(state.player, 'player:damage');
     if (state.player.hp <= 0) { this.finish(BattlePhase.DEFEAT); return; }
     if (!this.livingEnemies().length) { this.finish(BattlePhase.VICTORY); return; }
     if (state.enemy.hp <= 0) this.selectFirstLiving();
     state.intents = state.enemies.map((enemy) => enemy.hp > 0 ? getEnemyIntent(enemy, state.turn) : null);
+    const recommendation = recommendTarget(state, this.buffSystem, this.skillSystem);
+    state.recommendedEnemyIndex = recommendation?.index ?? state.selectedEnemyIndex;
+    state.recommendationReason = recommendation?.reason || '';
+    if (recommendation) {
+      state.selectedEnemyIndex = recommendation.index;
+      state.enemy = state.enemies[recommendation.index];
+    }
     state.intent = state.intents[state.selectedEnemyIndex];
     state.activeActorIndex = 0;
     state.enemyTurnIndex = 0;
@@ -92,14 +103,18 @@ export class BattleSystem {
   useSkill(skillId) {
     const state = this.state;
     if (!state || state.phase !== BattlePhase.PLAYER_TURN) return false;
+    const skill = skills[skillId];
+    if (!skill || !this.skillSystem.canUse(skillId, state.player, state)) return false;
+    const support = this.skillSystem.isSupport(skillId);
     const target = state.enemies[state.selectedEnemyIndex];
     if (!target || target.hp <= 0) return false;
-    const dealsDamage = skills[skillId].effects.some((effect) => effect.type === 'damage' && effect.target !== 'self');
+    const dealsDamage = skill.effects.some((effect) => effect.type === 'damage' && effect.target !== 'self');
     const relicBonus = this.relics.beforeSkill(state.player, state);
     const passiveBonus = state.player.passiveId === 'firstCut' && state.firstDamage && dealsDamage ? 1 : 0;
     const originalUpgrade = state.player.skillUpgrades[skillId] || 0;
     state.player.skillUpgrades[skillId] = originalUpgrade + relicBonus + passiveBonus;
-    const used = this.skillSystem.use(skillId, { battle: state, player: state.player, source: state.player, target });
+    this.events.emit('skill:cast', { skillId, skill, source: state.player, target, state });
+    const used = this.skillSystem.use(skillId, { battle: state, player: state.player, source: state.player, target, visualDelay: 240 });
     state.player.skillUpgrades[skillId] = originalUpgrade;
     if (!used) return false;
     state.firstSkill = false;
@@ -108,6 +123,11 @@ export class BattleSystem {
     this.events.emit('skill:used', { skillId, target, state });
     if (!this.livingEnemies().length) return this.finish(BattlePhase.VICTORY);
     if (target.hp <= 0) this.selectFirstLiving();
+    if (support) {
+      state.supportUsed = true;
+      const canAttack = state.player.skills?.some((id) => skills[id]?.effects.some((effect) => effect.type === 'damage' && effect.target !== 'self') && this.skillSystem.canUse(id, state.player, state));
+      if (canAttack) { this.events.emit('battle:update', state); return true; }
+    }
     this.endPlayerTurn();
     return true;
   }
@@ -135,11 +155,12 @@ export class BattleSystem {
     this.triggerTurnDamage(enemy, 'enemy:damage');
     if (enemy.hp > 0) {
       const intent = state.intents[index];
+      this.events.emit('battle:enemy-acting', { enemy, index, intent, state });
       if (intent.type === 'attack') {
         let amount = this.buffSystem.modifyOutgoing(enemy, intent.value);
         amount = this.buffSystem.modifyIncoming(state.player, amount);
         const result = applyDamage(state.player, amount);
-        this.events.emit('player:damage', { target: state.player, source: enemy, ...result });
+        this.events.emit('player:damage', { target: state.player, source: enemy, visualDelay: 240, ...result });
       } else if (intent.type === 'shield') {
         enemy.shield += intent.value;
         this.events.emit('enemy:shield', { target: enemy, amount: intent.value });

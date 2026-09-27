@@ -10,7 +10,7 @@ export function createEnemyParty(floor) {
     const elite = floor.type === FloorType.ELITE;
     return scaleEnemy(template, floor.index, bossSeat || elite, {
       hp: bossSeat ? .5 : elite ? .52 : .38,
-      attack: bossSeat ? .45 : elite ? .45 : .34
+      attack: bossSeat ? (floor.index === 10 ? .36 : .45) : elite ? .45 : .34
     });
   });
 }
