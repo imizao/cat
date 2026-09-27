@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 
+const renderDpr = () => Math.min(2, Math.max(1, Math.floor(devicePixelRatio || 1)));
+
 export class SceneManager {
-  constructor(container, animations) {
-    this.animations = animations;
+  constructor(container, animations, pixi = null, events = null) {
+    this.animations = animations; this.pixi = pixi; this.events = events;
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x07191d);
     this.scene.fog = new THREE.FogExp2(0x07191d, 0.034);
@@ -18,16 +20,31 @@ export class SceneManager {
     this.cameraTransition = 0;
     this.camera.lookAt(0, 0.8, 0);
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+    this.renderer.domElement.className = 'three-canvas';
+    this.renderer.setPixelRatio(renderDpr());
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = false;
     container.appendChild(this.renderer.domElement);
+    this.raycaster = new THREE.Raycaster(); this.pointer = new THREE.Vector2();
+    this.onScenePointer = (event) => {
+      const rect = this.renderer.domElement.getBoundingClientRect();
+      this.pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
+      this.raycaster.setFromCamera(this.pointer, this.camera);
+      this.events?.emit('scene:pointer', { event, pointer: this.pointer, raycaster: this.raycaster, camera: this.camera });
+    };
+    this.renderer.domElement.addEventListener('pointerdown', this.onScenePointer);
     this.scene.add(new THREE.HemisphereLight(0x9edbd4, 0x1f1822, 2.4));
     const key = new THREE.DirectionalLight(0xffd79c, 3.1); key.position.set(5, 8, 7); this.scene.add(key);
     this.makeSky();
     this.clock = new THREE.Clock(); this.elapsed = 0; this.frames = 0; this.fps = 0; this.lastFps = performance.now();
-    this.resizeObserver = new ResizeObserver(() => this.resize(container));
+    // Both signals feed the same resize path: ResizeObserver covers layout,
+    // while window resize also catches orientation and devicePixelRatio changes.
+    this.onResize = () => this.resize(container);
+    this.resizeObserver = new ResizeObserver(this.onResize);
     this.resizeObserver.observe(container); this.resize(container);
+    window.addEventListener('resize', this.onResize);
+    this.onVisibility = () => { if (document.hidden) this.pause(); else this.resume(); };
+    document.addEventListener('visibilitychange', this.onVisibility);
   }
   makeSky() {
     const geometry = new THREE.BufferGeometry();
@@ -39,7 +56,11 @@ export class SceneManager {
   }
   resize(container) {
     const w = container.clientWidth, h = container.clientHeight;
-    this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); this.renderer.setSize(w, h, false);
+    // Integer DPR keeps Three and Pixi drawing buffers byte-for-byte aligned;
+    // fractional DPR values make the two renderers round half-pixels differently.
+    const dpr = renderDpr();
+    this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); this.renderer.setPixelRatio(dpr); this.renderer.setSize(w, h, false);
+    this.pixi?.resize(w, h, dpr);
   }
   setView(mode) {
     const destination = mode === 'battle'
@@ -70,15 +91,48 @@ export class SceneManager {
     return this.currentBattleView();
   }
   start(onFrame) {
-    const loop = (now) => {
-      this.raf = requestAnimationFrame(loop);
+    this.onFrame = onFrame;
+    this.loop = (now) => {
+      if (!this.running) return;
+      this.raf = requestAnimationFrame(this.loop);
       const delta = Math.min(this.clock.getDelta(), .05); this.elapsed += delta;
-      this.animations.update(now); onFrame?.(delta, this.elapsed);
+      this.animations.update(now); this.onFrame?.(delta, this.elapsed); this.pixi?.update(delta, this.elapsed);
       this.renderer.render(this.scene, this.camera);
+      this.pixi?.render();
       this.frames++;
       if (now - this.lastFps >= 1000) { this.fps = Math.round(this.frames * 1000 / (now - this.lastFps)); this.frames = 0; this.lastFps = now; }
     };
-    this.raf = requestAnimationFrame(loop);
+    this.resume();
   }
-  objectCount() { let count = 0; this.scene.traverse(() => count++); return count; }
+  pause() {
+    if (!this.running) return;
+    this.running = false; cancelAnimationFrame(this.raf); this.clock.stop();
+    this.animations.pause(); this.pixi?.pause();
+  }
+  resume() {
+    if (this.running || document.hidden) return;
+    this.running = true; this.clock.start(); this.animations.resume(); this.pixi?.resume();
+    this.raf = requestAnimationFrame(this.loop);
+  }
+  disposeSceneResources() {
+    const geometries = new Set(); const materials = new Set(); const textures = new Set();
+    this.scene.traverse((object) => {
+      if (object.geometry) geometries.add(object.geometry);
+      const source = object.material ? (Array.isArray(object.material) ? object.material : [object.material]) : [];
+      source.forEach((material) => materials.add(material));
+    });
+    materials.forEach((material) => {
+      Object.values(material).forEach((value) => { if (value?.isTexture) textures.add(value); });
+      material.dispose();
+    });
+    geometries.forEach((geometry) => geometry.dispose());
+    textures.forEach((texture) => texture.dispose());
+  }
+  destroy({ destroyPixi = true } = {}) {
+    this.pause(); this.resizeObserver.disconnect(); window.removeEventListener('resize', this.onResize); document.removeEventListener('visibilitychange', this.onVisibility);
+    this.renderer.domElement.removeEventListener('pointerdown', this.onScenePointer);
+    this.disposeSceneResources(); this.renderer.renderLists.dispose(); this.renderer.dispose(); this.renderer.forceContextLoss(); this.renderer.domElement.remove();
+    if (destroyPixi) this.pixi?.destroy();
+  }
+  objectCount() { let count = 0; this.scene.traverse(() => count++); return count + (this.pixi?.objectCount() || 0); }
 }

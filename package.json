@@ -11,6 +11,7 @@
     "simulate": "node scripts/simulate.js"
   },
   "dependencies": {
+    "pixi.js": "^8.21.0",
     "three": "^0.180.0"
   },
   "devDependencies": {

@@ -17,7 +17,7 @@ function makePlayer(cat) {
     hp: cat.maxHp, maxHp: cat.maxHp,
     energy: cat.maxEnergy, maxEnergy: cat.maxEnergy, baseMaxEnergy: cat.maxEnergy, heartGuard: 0,
     shield: 0, passiveId: cat.passive.id,
-    skills: [...cat.skills], skillUpgrades: {}, costModifiers: {}, relics: [], buffs: []
+    skills: [...cat.skills], skillUpgrades: {}, costModifiers: {}, relics: [], mutations: [], buffs: []
   };
 }
 
@@ -156,6 +156,12 @@ export class AutoPlaySimulator {
         if (effect.type === 'applyBuff') score += effect.target === 'self' ? 12 : 8;
         if (effect.type === 'gainEnergy') score += 2;
       });
+      if (id === 'moonPounce' && this.player.mutations.includes('lunarRelay')) {
+        const target = state.enemies[state.selectedEnemyIndex];
+        if (target && target.hp + target.shield <= 3 + (this.player.skillUpgrades[id] || 0)) score += 18;
+      }
+      if (id === 'scratchMark' && this.player.mutations.includes('spreadingInk')) score += Math.max(0, this.battle.livingEnemies().length - 1) * 18;
+      if (id === 'nap' && this.player.mutations.includes('dreamShell')) score += 72 + incoming * 6;
       score -= this.battle.skillSystem.cost(id, this.player, state) * 2;
       if (lastPlayerAction?.skillId === id && !definition.effects.some((effect) => effect.type === 'damage' && effect.target !== 'self')) score -= 85;
       if (score > bestScore) { bestScore = score; best = id; }
@@ -176,6 +182,7 @@ export class AutoPlaySimulator {
     if (reward.id === 'heal') return (this.player.maxHp - this.player.hp) * 24;
     if (reward.id === 'maxHp') return 84 + (1 - this.player.hp / this.player.maxHp) * 25;
     if (reward.id === 'energy') return this.player.maxEnergy < 6 ? 112 : 22;
+    if (reward.id.startsWith('mutation:')) return 104;
     if (reward.id.startsWith('upgrade:')) return 96;
     if (reward.id === 'relic:catBell') return 118;
     if (reward.id === 'relic:oldBox') return 108;

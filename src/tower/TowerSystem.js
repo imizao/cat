@@ -36,5 +36,6 @@ export class TowerSystem {
   }
   getFloor(index) { return this.generator.generate(index); }
   setVisible(visible) { this.root.visible = visible; }
+  update(elapsed) { if (this.root.visible) this.pool.update(elapsed); }
   get activeCount() { return this.pool.items.filter((item) => item.group.visible).length; }
 }

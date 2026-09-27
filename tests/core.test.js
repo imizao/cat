@@ -10,7 +10,8 @@ import { BattleSystem, BattlePhase } from '../src/battle/BattleSystem.js';
 import { EffectSystem } from '../src/battle/EffectSystem.js';
 import { AutoPlaySimulator, summarizeRuns } from '../src/simulation/AutoPlaySimulator.js';
 import { scaleSkillEffect, skillGrowthBonus } from '../src/systems/SkillGrowth.js';
-import { getEnemyIntent } from '../src/battle/EnemyAI.js';
+import { attackGrowthForTurn, getEnemyIntent } from '../src/battle/EnemyAI.js';
+import { createEnemyParty } from '../src/systems/EncounterSystem.js';
 
 describe('deterministic world', () => {
   it('repeats random sequences', () => { const a = new SeededRandom(123), b = new SeededRandom(123); expect(Array.from({ length: 10 }, () => a.random())).toEqual(Array.from({ length: 10 }, () => b.random())); });
@@ -76,7 +77,24 @@ describe('progression', () => {
     const rewards = new RewardSystem(1).generate(player, 20);
     expect(rewards).toHaveLength(3);
     expect(rewards.some((reward) => ['heal', 'energy'].includes(reward.id))).toBe(false);
-    expect(rewards.filter((reward) => reward.id.startsWith('upgrade:')).length).toBeGreaterThanOrEqual(2);
+    expect(rewards.filter((reward) => reward.id.startsWith('upgrade:') || reward.id.startsWith('mutation:')).length).toBeGreaterThanOrEqual(2);
+  });
+  it('offers an owned skill mutation on milestone floors only once', () => {
+    const player = { hp: 11, maxHp: 11, energy: 3, maxEnergy: 3, skills: ['moonPounce'], relics: [], mutations: [], skillUpgrades: {} };
+    const rewards = new RewardSystem(1);
+    const mutation = rewards.generate(player, 5).find((reward) => reward.id === 'mutation:lunarRelay');
+    expect(mutation).toMatchObject({ kind: 'mutation', name: '月扑·逐月' });
+    rewards.apply(mutation, player);
+    expect(player.mutations).toEqual(['lunarRelay']);
+    expect(player.skillUpgrades.moonPounce).toBe(1);
+    expect(rewards.generate(player, 10).some((reward) => reward.id === mutation.id)).toBe(false);
+  });
+  it('offers catch-up growth instead of repeatedly widening skill gaps', () => {
+    const player = { hp: 30, maxHp: 16, energy: 6, maxEnergy: 6, skills: ['moonPounce', 'warmGroom', 'cloudFur', 'tailTrick'], relics: ['catBell', 'driedFishBag', 'oldBox'], mutations: ['lunarRelay'], skillUpgrades: { moonPounce: 17, warmGroom: 15, cloudFur: 8, tailTrick: 8 } };
+    const rewards = new RewardSystem(1).generate(player, 65);
+    const upgrades = rewards.filter((reward) => reward.id.startsWith('upgrade:')).map((reward) => reward.id);
+    expect(upgrades.length).toBeGreaterThanOrEqual(2);
+    expect(upgrades.every((id) => ['upgrade:cloudFur', 'upgrade:tailTrick'].includes(id))).toBe(true);
   });
   it('scales difficulty smoothly upward', () => { expect(difficultyForFloor(2)).toBeGreaterThan(difficultyForFloor(1)); expect(difficultyForFloor(100)).toBeLessThan(10); });
   it('grows enemy health, attack and skill intents with floor depth', () => {
@@ -87,6 +105,25 @@ describe('progression', () => {
     expect(late.attack).toBeGreaterThan(early.attack);
     expect(late.skillPower).toBeGreaterThan(early.skillPower);
     expect(getEnemyIntent(late, 2).value).toBe(late.skillPower);
+  });
+  it('grows enemy attacks during long battles by AI temperament with a cap', () => {
+    const steady = { attack: 1, ai: 'steady', growthLevel: 0 };
+    const aggressive = { attack: 1, ai: 'fickle', growthLevel: 0 };
+    expect([1, 2, 3].map((turn) => getEnemyIntent(steady, turn).value)).toEqual([1, 1, 2]);
+    expect(getEnemyIntent(aggressive, 1).value).toBe(1);
+    expect(getEnemyIntent(aggressive, 2)).toMatchObject({ value: 2, growth: 1, label: '攻击 2 · 蓄势+1' });
+    expect(attackGrowthForTurn(aggressive, 99)).toBe(2);
+    expect(attackGrowthForTurn({ ...aggressive, growthLevel: 20 }, 99)).toBe(3);
+  });
+  it('raises high-floor party health and opening attack without inflating floor one', () => {
+    const ids = ['reedblade', 'embertail', 'rainwhisker'];
+    const early = createEnemyParty({ index: 1, type: FloorType.BATTLE, enemyIds: ids });
+    const late = createEnemyParty({ index: 65, type: FloorType.BATTLE, enemyIds: ids });
+    expect(Math.min(...early.map((enemy) => enemy.attack))).toBe(1);
+    expect(early.every((enemy) => enemy.combatTier === 0)).toBe(true);
+    expect(late.every((enemy) => enemy.combatTier === 5)).toBe(true);
+    expect(Math.min(...late.map((enemy) => enemy.attack))).toBeGreaterThanOrEqual(6);
+    expect(Math.min(...late.map((enemy) => enemy.maxHp))).toBeGreaterThanOrEqual(14);
   });
 });
 
@@ -161,6 +198,19 @@ describe('counterclockwise party battle', () => {
     expect(player.hp).toBe(11);
   });
 
+  it('preserves combat-created excess health after victory', () => {
+    const events = new EventBus();
+    const relics = { onBattleStart() {}, beforeSkill() { return 0; } };
+    const battle = new BattleSystem(events, relics, { modifiers: { firstSkillCostDelta: 0 } });
+    const player = { hp: 11, maxHp: 11, energy: 3, maxEnergy: 3, shield: 0, buffs: [], relics: [], passiveId: '', skills: ['warmGroom', 'moonPounce'], skillUpgrades: {}, costModifiers: {} };
+    const enemy = { id: 'target', name: 'target', hp: 3, maxHp: 3, shield: 0, buffs: [], attack: 1, ai: 'steady' };
+    battle.start(player, [enemy], 1);
+    battle.useSkill('warmGroom');
+    expect(player.hp).toBe(13);
+    battle.useSkill('moonPounce');
+    expect(player.hp).toBe(13);
+  });
+
   it('grows healing and scratch stacks with their skill levels', () => {
     const events = new EventBus();
     const relics = { onBattleStart() {}, beforeSkill() { return 0; } };
@@ -173,6 +223,40 @@ describe('counterclockwise party battle', () => {
     battle.useSkill('scratchMark');
     expect(enemy.hp).toBe(6);
     expect(enemy.buffs.find((buff) => buff.id === 'scratch')?.stacks).toBe(4);
+  });
+
+  it('restores energy when a mutated moon pounce defeats its target', () => {
+    const events = new EventBus();
+    const relics = { onBattleStart() {}, beforeSkill() { return 0; } };
+    const battle = new BattleSystem(events, relics, { modifiers: { firstSkillCostDelta: 0 } });
+    const player = { hp: 11, maxHp: 11, energy: 2, maxEnergy: 3, baseMaxEnergy: 3, shield: 0, buffs: [], relics: [], mutations: ['lunarRelay'], passiveId: '', skills: ['moonPounce'], skillUpgrades: {}, costModifiers: {} };
+    const enemy = { id: 'target', name: 'target', hp: 3, maxHp: 3, shield: 0, buffs: [], attack: 1, ai: 'steady' };
+    battle.start(player, [enemy], 1);
+    expect(battle.useSkill('moonPounce')).toBe(true);
+    expect(player.energy).toBe(2);
+    expect(battle.state.phase).toBe(BattlePhase.VICTORY);
+  });
+
+  it('spreads one scratch stack to other enemies with mutated scratch mark', () => {
+    const events = new EventBus();
+    const relics = { onBattleStart() {}, beforeSkill() { return 0; } };
+    const battle = new BattleSystem(events, relics, { modifiers: { firstSkillCostDelta: 0 } });
+    const player = { hp: 10, maxHp: 10, energy: 3, maxEnergy: 3, baseMaxEnergy: 3, shield: 0, buffs: [], relics: [], mutations: ['spreadingInk'], passiveId: '', skills: ['scratchMark'], skillUpgrades: {}, costModifiers: {} };
+    const enemies = ['one', 'two', 'three'].map((id) => ({ id, name: id, hp: 8, maxHp: 8, shield: 0, buffs: [], attack: 1, ai: 'steady' }));
+    battle.start(player, enemies, 1);
+    battle.useSkill('scratchMark');
+    expect(enemies.map((enemy) => enemy.buffs.find((buff) => buff.id === 'scratch')?.stacks)).toEqual([1, 1, 1]);
+  });
+
+  it('turns mutated nap healing into matching shield', () => {
+    const events = new EventBus();
+    const relics = { onBattleStart() {}, beforeSkill() { return 0; } };
+    const battle = new BattleSystem(events, relics, { modifiers: { firstSkillCostDelta: 0 } });
+    const player = { hp: 5, maxHp: 10, energy: 3, maxEnergy: 3, baseMaxEnergy: 3, shield: 0, buffs: [], relics: [], mutations: ['dreamShell'], passiveId: '', skills: ['nap'], skillUpgrades: {}, costModifiers: {} };
+    const enemy = { id: 'target', name: 'target', hp: 8, maxHp: 8, shield: 0, buffs: [], attack: 1, ai: 'steady' };
+    battle.start(player, [enemy], 1);
+    battle.useSkill('nap');
+    expect(player).toMatchObject({ hp: 8, shield: 3 });
   });
 
   it('allows one pursuit after an energy-gain skill', () => {

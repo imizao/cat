@@ -7,6 +7,7 @@ import { recommendTarget } from './TargetAdvisor.js';
 import { skills } from '../data/skills.js';
 import { scaleSkillEffect } from '../systems/SkillGrowth.js';
 import { restoreEnergy } from '../systems/ResourceRules.js';
+import { mutationForSkill } from '../data/mutations.js';
 
 export const BattlePhase = { PLAYER_TURN: 'PLAYER_TURN', ENEMY_TURN: 'ENEMY_TURN', VICTORY: 'VICTORY', DEFEAT: 'DEFEAT' };
 
@@ -39,6 +40,7 @@ export class BattleSystem {
       ],
       firstSkill: true, firstDamage: true,
       supportUsed: false, offensiveActionsUsed: 0, pursuitCharge: 0, pursuitReady: false,
+      mutationUses: {},
       weeklyCostDelta: this.weekly.modifiers.firstSkillCostDelta,
       history: []
     };
@@ -134,12 +136,33 @@ export class BattleSystem {
     const support = this.skillSystem.isSupport(skillId);
     const target = state.enemies[state.selectedEnemyIndex];
     if (!target || target.hp <= 0) return false;
+    const playerHpBefore = state.player.hp;
     const dealsDamage = skill.effects.some((effect) => effect.type === 'damage' && effect.target !== 'self');
     const relicBonus = this.relics.beforeSkill(state.player, state);
     const passiveBonus = state.player.passiveId === 'firstCut' && state.firstDamage && dealsDamage ? 1 : 0;
     this.events.emit('skill:cast', { skillId, skill, source: state.player, target, state });
     const used = this.skillSystem.use(skillId, { battle: state, player: state.player, source: state.player, target, visualDelay: 240, damageBonus: relicBonus + passiveBonus });
     if (!used) return false;
+    const mutation = mutationForSkill(state.player, skillId);
+    if (mutation?.id === 'lunarRelay' && target.hp <= 0 && !state.mutationUses.lunarRelay) {
+      const amount = restoreEnergy(state.player, 1);
+      if (amount) {
+        state.mutationUses.lunarRelay = true;
+        this.events.emit('player:energy', { target: state.player, amount, visualDelay: 240 });
+        this.events.emit('mutation:trigger', { mutation, target });
+      }
+    } else if (mutation?.id === 'spreadingInk') {
+      const recipients = state.enemies.filter((enemy) => enemy !== target && enemy.hp > 0);
+      recipients.forEach((enemy) => this.buffSystem.add(enemy, 'scratch', 1, 3));
+      if (recipients.length) this.events.emit('mutation:trigger', { mutation, target });
+    } else if (mutation?.id === 'dreamShell') {
+      const shield = Math.max(0, state.player.hp - playerHpBefore);
+      if (shield) {
+        state.player.shield += shield;
+        this.events.emit('player:shield', { amount: shield });
+        this.events.emit('mutation:trigger', { mutation, target: state.player });
+      }
+    }
     state.firstSkill = false;
     if (dealsDamage) state.firstDamage = false;
     state.history.push({ turn: state.turn, actor: 'player', skillId, target: state.selectedEnemyIndex });

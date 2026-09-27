@@ -27,7 +27,7 @@ export class Game {
     this.ui.setAutoCombo(this.autoCombo);
     this.audio = new AudioManager(this.events);
     this.ui.setSound(this.audio.enabled);
-    this.scene = new SceneManager(this.ui.refs.scene, this.animations);
+    this.scene = new SceneManager(this.ui.refs.scene, this.animations, this.ui.pixi, this.events);
     this.interior = new TowerInterior(this.scene.scene, this.animations);
     this.actors = new ActorRenderer(this.scene.scene, this.events, this.animations);
     this.mode = 'MENU'; this.currentRewards = [];
@@ -48,6 +48,7 @@ export class Game {
     this.events.on('player:energy', ({ amount, visualDelay = 0 }) => { this.afterVisual(visualDelay, () => this.ui.float(`+${amount}能量`, 'energy-float')); this.ui.updatePlayer(this.player, this.battle); });
     this.events.on('player:heal', ({ amount }) => { if (amount) this.ui.float(`+${amount}`, 'heal'); });
     this.events.on('player:shield', ({ amount }) => this.ui.float(`+${amount}盾`, 'shield-float'));
+    this.events.on('mutation:trigger', ({ mutation, target }) => this.ui.float(`✧ ${mutation.name}`, 'mutation-float', target?.encounterIndex ?? null));
     this.events.on('battle:end', () => this.onVictory());
     this.events.on('battle:defeat', () => {
       this.mode = 'DEFEAT'; this.saveSystem.reset();
@@ -80,11 +81,11 @@ export class Game {
   }
   createRun(catId) {
     const cat = getCat(catId); const seed = crypto.getRandomValues(new Uint32Array(1))[0];
-    return { version: 1, worldSeed: seed, currentFloor: 0, currency: 0, essence: 0, catId, player: { hp: cat.maxHp, maxHp: cat.maxHp, energy: cat.maxEnergy, maxEnergy: cat.maxEnergy, baseMaxEnergy: cat.maxEnergy, heartGuard: 0, shield: 0, passiveId: cat.passive.id, skills: [...cat.skills], skillUpgrades: {}, costModifiers: {}, relics: [], buffs: [] } };
+    return { version: 1, worldSeed: seed, currentFloor: 0, currency: 0, essence: 0, catId, player: { hp: cat.maxHp, maxHp: cat.maxHp, energy: cat.maxEnergy, maxEnergy: cat.maxEnergy, baseMaxEnergy: cat.maxEnergy, heartGuard: 0, shield: 0, passiveId: cat.passive.id, skills: [...cat.skills], skillUpgrades: {}, costModifiers: {}, relics: [], mutations: [], buffs: [] } };
   }
   startRun(data) {
     this.worldSeed = data.worldSeed; this.currentFloor = data.currentFloor; this.currency = data.currency || 0; this.essence = data.essence || 0;
-    this.cat = getCat(data.catId); this.player = { ...data.player, baseMaxEnergy: data.player.baseMaxEnergy || this.cat.maxEnergy, heartGuard: data.player.heartGuard || 0, buffs: [], shield: 0, energy: Number.isFinite(data.player.energy) ? data.player.energy : data.player.maxEnergy };
+    this.cat = getCat(data.catId); this.player = { ...data.player, baseMaxEnergy: data.player.baseMaxEnergy || this.cat.maxEnergy, heartGuard: data.player.heartGuard || 0, mutations: data.player.mutations || [], buffs: [], shield: 0, energy: Number.isFinite(data.player.energy) ? data.player.energy : data.player.maxEnergy };
     this.relics = new RelicSystem(); this.rewards = new RewardSystem(this.worldSeed);
     this.battle = new BattleSystem(this.events, this.relics, weeklyModifier);
     if (this.tower) this.scene.scene.remove(this.tower.root);
@@ -186,8 +187,12 @@ export class Game {
   }
   update(delta, elapsed) {
     this.actors.update(elapsed);
+    this.tower?.update(elapsed);
     if (this.debugEnabled && this.tower && Math.floor(elapsed * 4) !== this.debugTick) {
       this.debugTick = Math.floor(elapsed * 4); this.ui.updateDebug({ fps: this.scene.fps, floor: this.currentFloor, objects: this.scene.objectCount(), active: this.tower.activeCount });
     }
   }
+  pause() { this.scene?.pause(); }
+  resume() { this.scene?.resume(); }
+  destroy() { this.scene?.destroy({ destroyPixi: false }); this.ui?.destroy(); this.audio?.stop?.(); }
 }

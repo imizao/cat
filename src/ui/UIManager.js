@@ -3,6 +3,8 @@ import { skills } from '../data/skills.js';
 import { buffs } from '../data/buffs.js';
 import { relics } from '../data/relics.js';
 import { scaleSkillEffect, skillGrowthBonus } from '../systems/SkillGrowth.js';
+import { mutationForSkill } from '../data/mutations.js';
+import { PixiUILayer } from '../render/PixiUILayer.js';
 
 const floorNames = { BATTLE: '寻常层', ELITE: '凶险层', REST: '月台', SHOP: '猫市', EVENT: '奇遇', TREASURE: '秘藏', BOSS: '镇层者' };
 
@@ -43,32 +45,40 @@ export class UIManager {
       </main>`;
     this.root = root;
     this.refs = Object.fromEntries([...root.querySelectorAll('[data-ref]')].map((el) => [el.dataset.ref, el]));
+    this.pixi = new PixiUILayer(this.refs.scene, root, events);
     this.refs.debug.classList.toggle('is-hidden', !debugEnabled);
-    root.addEventListener('click', (event) => {
+    this.onClick = (event) => {
       const action = event.target.closest('[data-action]');
       if (action && !action.disabled) this.events.emit('ui:action', { action: action.dataset.action, value: action.dataset.value });
-    });
+    };
+    root.addEventListener('click', this.onClick);
     let touchY = 0;
-    root.addEventListener('touchstart', (event) => { touchY = event.touches[0].clientY; }, { passive: true });
-    root.addEventListener('touchend', (event) => { if (touchY - event.changedTouches[0].clientY > 70) this.events.emit('ui:action', { action: 'climb' }); }, { passive: true });
+    this.onTouchStart = (event) => { touchY = event.touches[0].clientY; };
+    this.onTouchEnd = (event) => { if (touchY - event.changedTouches[0].clientY > 70) this.events.emit('ui:action', { action: 'climb' }); };
+    root.addEventListener('touchstart', this.onTouchStart, { passive: true });
+    root.addEventListener('touchend', this.onTouchEnd, { passive: true });
   }
   showStart(hasSave) {
     this.refs.overlay.className = 'overlay start-screen';
     this.refs.overlay.innerHTML = `<div class="brand-mark">ฅ</div><p class="kicker">向月而行 · 永无塔顶</p><h1>月爪<br><em>天塔</em></h1><p class="intro">猫客环阵，一爪定回合。</p><div class="start-actions">${hasSave ? '<button class="primary" data-action="continue">继续登塔</button>' : ''}<button class="ghost" data-action="new">新游戏</button>${hasSave ? '<button class="text-button" data-action="reset">重置存档</button>' : ''}</div>`;
+    this.pixi.showOverlay({ visible: true, kind: 'start', hasSave });
   }
   showCatSelect() {
     this.refs.overlay.className = 'overlay select-screen';
     this.refs.overlay.innerHTML = `<div class="select-head"><span>选择旅伴</span><h2>哪一双爪，<br>叩响第一重门？</h2></div><div class="cat-list">${cats.map((cat) => `<button class="cat-choice" data-action="selectCat" data-value="${cat.id}" style="--cat:${cat.color}"><span class="cat-emoji">${cat.emoji}</span><span><b>${cat.name}</b><small>${cat.epithet}</small><i>${cat.maxHp}♥ · ${cat.maxEnergy}⚡ · ${cat.passive.name}</i></span><em>›</em></button>`).join('')}</div>`;
+    this.pixi.showOverlay({ visible: true, kind: 'cats', cats: cats.map((cat) => ({ ...cat, passive: cat.passive.name })) });
   }
-  hideOverlay() { this.refs.overlay.className = 'overlay is-hidden'; }
+  hideOverlay() { this.refs.overlay.className = 'overlay is-hidden'; this.pixi.showOverlay({ visible: false }); }
   showPlayer(player, cat) {
+    this.currentCat = cat;
     this.refs.playerDock.classList.remove('is-hidden'); this.refs.portrait.textContent = cat.emoji;
     this.refs.catName.textContent = cat.name; this.refs.passive.textContent = cat.passive.name;
-    this.updatePlayer(player); this.renderSkills(player);
+    this.renderSkills(player); this.updatePlayer(player);
   }
   updateHud(game) {
     this.refs.floor.textContent = game.currentFloor ? `${game.currentFloor} 层` : '塔基';
     this.refs.currency.textContent = game.currency; this.refs.essence.textContent = game.essence;
+    this.pixi.updateHud({ floor: this.refs.floor.textContent, currency: game.currency, essence: game.essence, weekly: this.refs.weekly.textContent });
   }
   setSound(enabled) {
     this.refs.sound.textContent = enabled ? '🔊' : '🔇';
@@ -83,6 +93,7 @@ export class UIManager {
     this.refs.energyLabel.textContent = pursuit ? '能量 · 可追击' : fallback ? '能量 · 保底爪击' : '能量'; this.refs.energyStat.classList.toggle('is-pursuit', pursuit || fallback);
     this.refs.playerBuffs.innerHTML = this.buffHTML(player.buffs);
     if (battle) this.renderSkills(player, battle);
+    this.pixi.updatePlayer(this.playerView(player, battle));
   }
   renderSkills(player, battle = null) {
     this.refs.skills.innerHTML = player.skills.map((id) => {
@@ -91,8 +102,31 @@ export class UIManager {
       const support = skill.effects.every((effect) => effect.type !== 'damage');
       const level = player.skillUpgrades[id] || 0;
       const bonus = skillGrowthBonus(level);
-      return `<button class="skill" data-action="skill" data-value="${id}" ${disabled ? 'disabled' : ''}><span>${skill.icon}</span><b>${skill.name}${level ? `<sup>Lv.${level}${bonus !== level ? ` · +${bonus}` : ''}</sup>` : ''}</b><small>${this.skillDescription(skill, level)}${support ? ' · 辅助' : ''}</small><em>${cost}⚡</em></button>`;
+      const mutation = mutationForSkill(player, id);
+      return `<button class="skill" data-action="skill" data-value="${id}" ${disabled ? 'disabled' : ''}><span>${skill.icon}</span><b>${skill.name}${level ? `<sup>Lv.${level}${bonus !== level ? ` · +${bonus}` : ''}</sup>` : ''}</b>${mutation ? `<mark>${mutation.name}</mark>` : ''}<small>${this.skillDescription(skill, level)}${support ? ' · 辅助' : ''}</small><em>${cost}⚡</em></button>`;
     }).join('');
+  }
+  playerView(player, battle) {
+    const pursuit = battle?.state?.phase === 'PLAYER_TURN' && battle.state.pursuitReady;
+    const fallback = battle?.state?.phase === 'PLAYER_TURN' && player.energy === 0 && battle.state.offensiveActionsUsed === 0;
+    return {
+      visible: !this.refs.playerDock.classList.contains('is-hidden'), icon: this.currentCat?.emoji || '🐈',
+      name: this.currentCat?.name || '', passive: this.currentCat?.passive?.name || '',
+      hp: player.hp, maxHp: player.maxHp, energy: player.energy, maxEnergy: player.maxEnergy,
+      energyLabel: pursuit ? '可追击' : fallback ? '保底爪击' : '能量', shield: player.shield,
+      buffs: this.refs.playerBuffs.textContent.trim(),
+      skills: player.skills.map((id) => {
+        const skill = skills[id]; const level = player.skillUpgrades[id] || 0;
+        const support = skill.effects.every((effect) => effect.type !== 'damage');
+        return {
+          icon: skill.icon, name: `${skill.name}${level ? ` Lv.${level}` : ''}`,
+          description: `${this.skillDescription(skill, level)}${support ? ' · 辅助' : ''}`,
+          cost: battle ? battle.skillSystem.cost(id, player, battle.state) : skill.cost,
+          disabled: !battle || battle.state?.phase !== 'PLAYER_TURN' || battle.state?.comboRunning || !battle.skillSystem.canUse(id, player, battle.state),
+          mutation: mutationForSkill(player, id)?.name || ''
+        };
+      })
+    };
   }
   skillDescription(skill, level) {
     return skill.effects.map((effect) => {
@@ -130,15 +164,29 @@ export class UIManager {
       const intent = state.intents?.[index]?.label || '—';
       return `<button class="enemy-seat seat-${index + 1}${selected ? ' is-target' : ''}${recommended ? ' is-recommended' : ''}${active ? ' is-active' : ''}${enemy.hp <= 0 ? ' is-defeated' : ''}" data-action="target" data-value="${index}" ${enemy.hp <= 0 ? 'disabled' : ''} style="--enemy:${enemy.color}" ${recommended ? `title="${state.recommendationReason}" aria-label="推荐攻击 ${enemy.name}：${state.recommendationReason}"` : ''}>
         <span class="seat-no">${index + 2}</span><span class="enemy-avatar">${enemy.icon}</span>
-        <span class="enemy-copy"><small>${enemy.title || '守层猫客'}${enemy.growthLevel ? ` · ${enemy.growthLevel}阶` : ''}</small><b>${enemy.name}</b></span>
+        <span class="enemy-copy"><small>${enemy.title || '守层猫客'}${enemy.combatTier ? ` · 战阶${enemy.combatTier}` : ''}</small><b>${enemy.name}</b></span>
         <span class="enemy-intent">${intent}</span>
         <span class="mini-bar"><i style="width:${Math.max(0, enemy.hp / enemy.maxHp * 100)}%"></i></span>
         <span class="enemy-health">${enemy.hp}/${enemy.maxHp}${enemy.shield ? ` · ${enemy.shield}盾` : ''}</span>
       </button>`;
     }).join('');
+    this.pixi.updateEnemies({
+      visible: !this.refs.battleArena.classList.contains('is-hidden'),
+      enemies: enemies.map((enemy, index) => ({
+        icon: enemy.icon, color: enemy.color, name: enemy.name,
+        title: `${enemy.title || '守层猫客'}${enemy.combatTier ? ` · 战阶${enemy.combatTier}` : ''}`,
+        intent: state.intents?.[index]?.label || '—', ratio: Math.max(0, enemy.hp / enemy.maxHp),
+        health: `${enemy.hp}/${enemy.maxHp}${enemy.shield ? ` · ${enemy.shield}盾` : ''}`,
+        selected: state.phase === 'PLAYER_TURN' && state.selectedEnemyIndex === index,
+        recommended: state.phase === 'PLAYER_TURN' && state.recommendedEnemyIndex === index,
+        active: state.phase === 'ENEMY_TURN' && state.activeActorIndex === index + 1,
+        defeated: enemy.hp <= 0
+      }))
+    });
   }
-  hideEnemies() { this.refs.battleArena.classList.add('is-hidden'); }
+  hideEnemies() { this.refs.battleArena.classList.add('is-hidden'); this.pixi.updateEnemies({ visible: false, enemies: [] }); }
   showSkill(skill) {
+    if (this.pixi.ready) { this.pixi.showSkill(skill); return; }
     const callout = this.refs.skillCallout;
     callout.innerHTML = `<i>${skill.icon}</i><b>${skill.name}</b>`;
     callout.classList.remove('is-casting');
@@ -146,25 +194,29 @@ export class UIManager {
     callout.classList.add('is-casting');
   }
   impact(strong = false) {
+    this.pixi.impact(strong);
     const shell = this.root.querySelector('.game-shell');
     shell.classList.remove('has-impact', 'has-heavy-impact');
     void shell.offsetWidth;
     shell.classList.add(strong ? 'has-heavy-impact' : 'has-impact');
   }
   buffHTML(list = []) { return list.map((item) => `<span>${buffs[item.id]?.name || item.id} ${item.stacks}</span>`).join(''); }
-  showClimb() { this.refs.centerAction.classList.remove('is-hidden'); this.refs.centerAction.innerHTML = `<p>塔门已开</p><button data-action="climb">登上一层 <span>↑</span></button><small>也可以向上滑动</small>`; }
-  hideCenterAction() { this.refs.centerAction.classList.add('is-hidden'); }
+  showClimb() { this.refs.centerAction.classList.remove('is-hidden'); this.refs.centerAction.innerHTML = `<p>塔门已开</p><button data-action="climb">登上一层 <span>↑</span></button><small>也可以向上滑动</small>`; this.pixi.showCenter({ visible: true, kind: 'climb', title: '塔门已开', label: '登上一层  ↑', hint: '也可以向上滑动' }); }
+  hideCenterAction() { this.refs.centerAction.classList.add('is-hidden'); this.pixi.showCenter({ visible: false }); }
   showFloorMoment(title, copy, action = 'leaveFloor', label = '继续向上') {
     this.refs.centerAction.classList.remove('is-hidden');
     this.refs.centerAction.innerHTML = `<div class="moment"><span>✦</span><h2>${title}</h2><p>${copy}</p><button data-action="${action}">${label}</button></div>`;
+    this.pixi.showCenter({ visible: true, kind: 'moment', title, copy, label });
   }
   showRewards(rewards, title = '取一缕塔光') {
     this.refs.overlay.className = 'overlay reward-screen';
-    this.refs.overlay.innerHTML = `<div class="reward-heading"><span>三选一</span><h2>${title}</h2><p>选择会留在这次旅途中</p></div><div class="reward-list">${rewards.map((reward, i) => `<button data-action="reward" data-value="${i}" style="--delay:${i * 70}ms"><span>${reward.icon}</span><b>${reward.name}</b><small>${reward.description}</small></button>`).join('')}</div>`;
+    this.refs.overlay.innerHTML = `<div class="reward-heading"><span>三选一</span><h2>${title}</h2><p>选择会留在这次旅途中</p></div><div class="reward-list">${rewards.map((reward, i) => `<button class="${reward.kind === 'mutation' ? 'is-mutation' : ''}" data-action="reward" data-value="${i}" style="--delay:${i * 70}ms"><span>${reward.icon}</span><b>${reward.name}${reward.kind === 'mutation' ? '<i>变式</i>' : ''}</b><small>${reward.description}</small></button>`).join('')}</div>`;
+    this.pixi.showOverlay({ visible: true, kind: 'reward', title, rewards: rewards.map((reward) => ({ ...reward, mutation: reward.kind === 'mutation' })) });
   }
   showDefeat(floor) {
     this.refs.overlay.className = 'overlay defeat-screen';
     this.refs.overlay.innerHTML = `<span class="defeat-paw">爪</span><h2>月色暗了一瞬</h2><p>止步于第 ${floor} 层</p><button class="primary" data-action="new">重新出发</button>`;
+    this.pixi.showOverlay({ visible: true, kind: 'defeat', floor });
   }
   showRewardResult(reward, before, after) {
     const changes = [];
@@ -184,6 +236,7 @@ export class UIManager {
     node.addEventListener('animationend', () => node.remove(), { once: true });
   }
   float(text, kind = '', enemyIndex = null) {
+    if (this.pixi.ready) { this.pixi.float(text, kind, enemyIndex); return; }
     const node = document.createElement('span'); node.className = `float-text ${kind}`; node.textContent = text;
     const positions = [{ x: 78, y: 38 }, { x: 50, y: 27 }, { x: 22, y: 38 }];
     const position = enemyIndex === null ? { x: 50, y: 64 } : positions[enemyIndex];
@@ -193,4 +246,10 @@ export class UIManager {
   updateDebug({ fps, floor, objects, active }) { this.refs.debug.textContent = `FPS ${fps}\nFloor ${floor}\nObjects ${objects}\nActive floors ${active}`; }
   floorName(type) { return floorNames[type] || type; }
   relicText(player) { return player.relics.map((id) => relics[id]?.name).filter(Boolean).join(' · '); }
+  destroy() {
+    this.root.removeEventListener('click', this.onClick);
+    this.root.removeEventListener('touchstart', this.onTouchStart);
+    this.root.removeEventListener('touchend', this.onTouchEnd);
+    this.pixi.destroy();
+  }
 }

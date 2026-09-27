@@ -9,8 +9,8 @@ export function createEnemyParty(floor) {
     const bossSeat = floor.type === FloorType.BOSS && index === 1;
     const elite = floor.type === FloorType.ELITE;
     return scaleEnemy(template, floor.index, bossSeat || elite, {
-      hp: bossSeat ? .5 : elite ? .52 : .38,
-      attack: bossSeat ? (floor.index === 10 ? .36 : .45) : elite ? .45 : .34
+      hp: bossSeat ? 0.5 : elite ? 0.52 : 0.38,
+      attack: bossSeat ? (floor.index === 10 ? 0.36 : 0.45) : elite ? 0.45 : 0.34
     });
   });
 }
