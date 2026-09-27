@@ -3,7 +3,7 @@ import { gainHealth } from './ResourceRules.js';
 export class RelicSystem {
   onFloorEnter(player, floorIndex = 1) {
     let heal = player.relics.includes('driedFishBag') ? 1 : 0;
-    if (player.passiveId === 'softLanding' && floorIndex % 3 === 0) heal += 1;
+    if (player.passiveId === 'softLanding' && floorIndex % 3 === 0) heal += 2;
     return gainHealth(player, heal);
   }
   onBattleStart(player) { if (player.relics.includes('oldBox')) player.shield += 2; }

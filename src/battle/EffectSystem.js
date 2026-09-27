@@ -28,7 +28,14 @@ export class EffectSystem {
         if (amount) this.events.emit(target === context.player ? 'player:shield' : 'enemy:shield', { amount });
         break;
       }
-      case 'gainEnergy': gainEnergy(target, effect.value); break;
+      case 'gainEnergy': {
+        const overflowBefore = Math.max(0, target.energy - target.maxEnergy);
+        const amount = gainEnergy(target, effect.value);
+        const overflowAfter = Math.max(0, target.energy - target.maxEnergy);
+        const overflowGained = overflowAfter - overflowBefore;
+        if (target === context.player && context.battle && overflowGained > 0) context.battle.pursuitCharge += overflowGained;
+        break;
+      }
       case 'loseEnergy': target.energy = Math.max(0, target.energy - effect.value); break;
       case 'applyBuff': this.buffs.add(target, effect.buffId, effect.stacks, effect.duration); break;
       case 'drawSkillModifier': context.player.skillUpgrades[effect.skillId] = (context.player.skillUpgrades[effect.skillId] || 0) + effect.value; break;

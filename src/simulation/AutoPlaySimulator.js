@@ -8,13 +8,14 @@ import { createEnemyParty } from '../systems/EncounterSystem.js';
 import { RelicSystem } from '../systems/RelicSystem.js';
 import { RewardSystem } from '../systems/RewardSystem.js';
 import { gainHealth } from '../systems/ResourceRules.js';
+import { scaleSkillEffect } from '../systems/SkillGrowth.js';
 
 const battleTypes = new Set([FloorType.BATTLE, FloorType.ELITE, FloorType.BOSS]);
 
 function makePlayer(cat) {
   return {
     hp: cat.maxHp, maxHp: cat.maxHp,
-    energy: cat.maxEnergy, maxEnergy: cat.maxEnergy,
+    energy: cat.maxEnergy, maxEnergy: cat.maxEnergy, baseMaxEnergy: cat.maxEnergy, heartGuard: 0,
     shield: 0, passiveId: cat.passive.id,
     skills: [...cat.skills], skillUpgrades: {}, costModifiers: {}, relics: [], buffs: []
   };
@@ -147,7 +148,7 @@ export class AutoPlaySimulator {
     usable.forEach((id) => {
       const definition = skills[id];
       let score = 0;
-      definition.effects.forEach((effect) => {
+      definition.effects.map((effect) => scaleSkillEffect(effect, this.player.skillUpgrades[id] || 0)).forEach((effect) => {
         if (effect.type === 'damage' && effect.target !== 'self') score += 55 + (effect.value + (this.player.skillUpgrades[id] || 0)) * 12;
         if (effect.type === 'damage' && effect.target === 'self') score -= effect.value * 18;
         if (effect.type === 'heal') score += hpRatio < .45 ? 88 + effect.value * 4 : Math.min(this.player.maxHp - this.player.hp, effect.value) * 6;
@@ -174,7 +175,7 @@ export class AutoPlaySimulator {
     if (!reward) return -Infinity;
     if (reward.id === 'heal') return (this.player.maxHp - this.player.hp) * 24;
     if (reward.id === 'maxHp') return 84 + (1 - this.player.hp / this.player.maxHp) * 25;
-    if (reward.id === 'energy') return this.player.maxEnergy < 5 ? 76 : 22;
+    if (reward.id === 'energy') return this.player.maxEnergy < 6 ? 112 : 22;
     if (reward.id.startsWith('upgrade:')) return 96;
     if (reward.id === 'relic:catBell') return 118;
     if (reward.id === 'relic:oldBox') return 108;

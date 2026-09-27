@@ -1,11 +1,28 @@
 import * as THREE from 'three';
 
 const catGeometry = {
-  head: new THREE.SphereGeometry(.5, 12, 9),
-  body: new THREE.SphereGeometry(.45, 10, 8),
-  ear: new THREE.ConeGeometry(.22, .48, 3),
-  eye: new THREE.SphereGeometry(.05, 8, 6),
-  tail: new THREE.TorusGeometry(.45, .08, 6, 12, Math.PI * 1.3)
+  head: new THREE.SphereGeometry(.52, 16, 11),
+  body: new THREE.SphereGeometry(.46, 14, 10),
+  cheek: new THREE.SphereGeometry(.16, 10, 7),
+  muzzle: new THREE.SphereGeometry(.13, 10, 7),
+  haunch: new THREE.SphereGeometry(.25, 10, 7),
+  ear: new THREE.ConeGeometry(.23, .52, 3),
+  innerEar: new THREE.ConeGeometry(.14, .34, 3),
+  eye: new THREE.SphereGeometry(.055, 10, 7),
+  pupil: new THREE.SphereGeometry(.027, 8, 6),
+  eyeShine: new THREE.SphereGeometry(.014, 6, 4),
+  nose: new THREE.ConeGeometry(.055, .07, 3),
+  paw: new THREE.CapsuleGeometry(.105, .27, 4, 7),
+  whisker: new THREE.CylinderGeometry(.009, .006, .34, 5),
+  tuft: new THREE.ConeGeometry(.16, .28, 3),
+  stripe: new THREE.CapsuleGeometry(.035, .15, 3, 5),
+  tail: new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(.3, -.02, -.04),
+    new THREE.Vector3(.5, .14, -.08),
+    new THREE.Vector3(.43, .42, -.04),
+    new THREE.Vector3(.26, .5, .02)
+  ]), 18, .075, 7, false)
 };
 
 const skillLooks = {
@@ -25,13 +42,60 @@ const skillLooks = {
 
 function makeCat(color, dark = false) {
   const group = new THREE.Group();
-  const material = new THREE.MeshStandardMaterial({ color, roughness: .76, flatShading: true });
-  const accent = new THREE.MeshStandardMaterial({ color: dark ? 0xefe2b4 : 0x392f32, roughness: .7 });
-  const head = new THREE.Mesh(catGeometry.head, material); head.scale.y = .88; group.add(head);
-  const body = new THREE.Mesh(catGeometry.body, material); body.position.y = -.65; body.scale.set(.78, 1, .72); group.add(body);
-  [-.32, .32].forEach((x) => { const ear = new THREE.Mesh(catGeometry.ear, material); ear.position.set(x, .48, 0); ear.rotation.z = x < 0 ? -.18 : .18; group.add(ear); });
-  [-.18, .18].forEach((x) => { const eye = new THREE.Mesh(catGeometry.eye, accent); eye.position.set(x, .08, .47); group.add(eye); });
-  const tail = new THREE.Mesh(catGeometry.tail, material); tail.position.set(.48, -.68, -.05); tail.rotation.set(0, 1.2, -.4); group.add(tail);
+  const baseColor = new THREE.Color(color);
+  const material = new THREE.MeshStandardMaterial({ color: baseColor, roughness: .82, flatShading: true });
+  const belly = new THREE.MeshStandardMaterial({ color: baseColor.clone().lerp(new THREE.Color(0xffe7bc), .42), roughness: .86, flatShading: true });
+  const marking = new THREE.MeshStandardMaterial({ color: baseColor.clone().lerp(new THREE.Color(0x2a2024), .38), roughness: .78, flatShading: true });
+  const face = new THREE.MeshStandardMaterial({ color: 0x2c2528, emissive: 0x080506, emissiveIntensity: .16, roughness: .58 });
+  const eyeMaterial = new THREE.MeshStandardMaterial({ color: dark ? 0xe7c66d : 0x2c2528, emissive: dark ? 0x4a351c : 0x080506, emissiveIntensity: .18, roughness: .5 });
+  const innerEarMaterial = new THREE.MeshStandardMaterial({ color: baseColor.clone().lerp(new THREE.Color(0xe88f8a), .55), roughness: .9, flatShading: true });
+  const white = new THREE.MeshBasicMaterial({ color: 0xfff4d2 });
+  const whiskerMaterial = new THREE.MeshBasicMaterial({ color: dark ? 0xe8d7b0 : 0x493c38, transparent: true, opacity: .72 });
+
+  const head = new THREE.Mesh(catGeometry.head, material); head.scale.set(1, .88, .92); group.add(head);
+  const body = new THREE.Mesh(catGeometry.body, material); body.position.y = -.66; body.scale.set(.82, 1.06, .75); group.add(body);
+  const chest = new THREE.Mesh(catGeometry.tuft, belly); chest.position.set(0, -.55, .39); chest.rotation.z = Math.PI; chest.scale.set(1, 1, .62); group.add(chest);
+
+  const ears = [-.32, .32].map((x) => {
+    const ear = new THREE.Mesh(catGeometry.ear, material); const direction = x < 0 ? -1 : 1;
+    ear.position.set(x, .49, -.015); ear.rotation.z = direction * .16; ear.scale.z = .72; group.add(ear);
+    const inner = new THREE.Mesh(catGeometry.innerEar, innerEarMaterial); inner.position.set(x, .5, .035); inner.rotation.z = direction * .16; inner.scale.z = .72; group.add(inner);
+    return { ear, inner, base: direction * .16, direction };
+  });
+
+  [-.27, .27].forEach((x) => {
+    const cheek = new THREE.Mesh(catGeometry.cheek, belly); cheek.position.set(x * .88, -.075, .43); cheek.scale.set(.9, .7, .52); group.add(cheek);
+  });
+  const muzzle = new THREE.Mesh(catGeometry.muzzle, belly); muzzle.position.set(0, -.105, .49); muzzle.scale.set(.92, .66, .5); group.add(muzzle);
+  const nose = new THREE.Mesh(catGeometry.nose, face); nose.position.set(0, -.055, .555); nose.rotation.x = Math.PI / 2; group.add(nose);
+
+  [-.18, .18].forEach((x) => {
+    const eye = new THREE.Mesh(catGeometry.eye, eyeMaterial); eye.position.set(x, .105, .47); eye.scale.set(.82, 1.22, .48); group.add(eye);
+    if (dark) { const pupil = new THREE.Mesh(catGeometry.pupil, face); pupil.position.set(x, .1, .502); pupil.scale.set(.56, 1.05, .3); group.add(pupil); }
+    const shine = new THREE.Mesh(catGeometry.eyeShine, white); shine.position.set(x - .014, .132, .515); group.add(shine);
+  });
+
+  [-1, 1].forEach((side) => {
+    [-.045, .045].forEach((offset, index) => {
+      const whisker = new THREE.Mesh(catGeometry.whisker, whiskerMaterial);
+      whisker.position.set(side * .4, -.12 + offset, .5);
+      whisker.rotation.z = Math.PI / 2 + side * (index ? -.12 : .12);
+      group.add(whisker);
+    });
+  });
+
+  [-.2, .2].forEach((x) => {
+    const leg = new THREE.Mesh(catGeometry.paw, material); leg.position.set(x, -.91, .27); leg.scale.set(.9, 1, .82); group.add(leg);
+    const toes = new THREE.Mesh(catGeometry.cheek, belly); toes.position.set(x, -1.08, .34); toes.scale.set(.72, .38, .72); group.add(toes);
+  });
+  [-.34, .34].forEach((x) => { const haunch = new THREE.Mesh(catGeometry.haunch, material); haunch.position.set(x, -.76, -.03); haunch.scale.set(.82, 1.12, .82); group.add(haunch); });
+
+  [-.11, 0, .11].forEach((x, index) => {
+    const stripe = new THREE.Mesh(catGeometry.stripe, marking); stripe.position.set(x, .31 - Math.abs(index - 1) * .035, .46); stripe.rotation.z = x * 1.3; stripe.scale.set(1, 1, .52); group.add(stripe);
+  });
+  const tail = new THREE.Mesh(catGeometry.tail, material); tail.position.set(.31, -.79, -.08); tail.rotation.set(-.12, .28, -.18); group.add(tail);
+
+  group.userData.rig = { head, body, chest, ears, tail, bodyScale: body.scale.clone(), chestScale: chest.scale.clone(), tailRotation: tail.rotation.clone() };
   return group;
 }
 
@@ -54,6 +118,8 @@ export class ActorRenderer {
     });
     events.on('player:heal', () => this.pulse(this.player, 0x78efb1));
     events.on('player:shield', () => this.pulse(this.player, 0x8fe7ed));
+    events.on('enemy:heal', ({ target }) => this.pulse(this.enemies[target?.encounterIndex], 0x78efb1));
+    events.on('enemy:shield', ({ target }) => this.pulse(this.enemies[target?.encounterIndex], 0x8fe7ed));
   }
   after(delay = 0, callback) {
     if (!delay) { callback(); return; }
@@ -75,7 +141,7 @@ export class ActorRenderer {
   }
   showPlayer(color) {
     if (this.player) this.scene.remove(this.player);
-    this.player = makeCat(color); this.player.position.set(0, .35, 3.15); this.player.scale.setScalar(.72); this.player.userData.baseScale = .72; this.scene.add(this.player);
+    this.player = makeCat(color); this.player.position.set(0, .55, 3.15); this.player.scale.setScalar(.72); this.player.userData.baseScale = .72; this.scene.add(this.player);
   }
   showEnemies(enemies) {
     this.hideEnemies();
@@ -212,10 +278,26 @@ export class ActorRenderer {
       object.scale.setScalar(base * (1 - t * .72));
     }, complete: () => { object.visible = false; } });
   }
+  animateCat(object, elapsed, phase = 0) {
+    const rig = object?.userData.rig;
+    if (!rig || !object.visible) return;
+    const breath = Math.sin(elapsed * 2.35 + phase);
+    rig.body.scale.set(rig.bodyScale.x * (1 - breath * .012), rig.bodyScale.y * (1 + breath * .022), rig.bodyScale.z);
+    rig.chest.scale.set(rig.chestScale.x, rig.chestScale.y * (1 + breath * .028), rig.chestScale.z);
+    rig.head.position.y = breath * .012;
+    rig.head.rotation.z = Math.sin(elapsed * 1.15 + phase) * .012;
+    rig.ears.forEach(({ ear, inner, base, direction }, index) => {
+      const twitch = Math.sin(elapsed * 1.7 + phase + index * 1.9) * .018 + Math.sin(elapsed * 4.1 + phase) * .008;
+      ear.rotation.z = base + twitch * direction;
+      inner.rotation.z = base + twitch * direction;
+    });
+    rig.tail.rotation.y = rig.tailRotation.y + Math.sin(elapsed * 1.45 + phase) * .15;
+    rig.tail.rotation.z = rig.tailRotation.z + Math.sin(elapsed * 1.9 + phase) * .055;
+  }
   update(elapsed) {
-    if (this.player) this.player.position.y = .35 + Math.sin(elapsed * 2.2) * .035;
+    if (this.player) { this.player.position.y = .55 + Math.sin(elapsed * 2.2) * .035; this.animateCat(this.player, elapsed); }
     const bases = [1.42, 2.72, 1.42];
-    this.enemies.forEach((enemy, index) => { enemy.position.y = bases[index] + Math.sin(elapsed * 1.8 + index) * .045; });
+    this.enemies.forEach((enemy, index) => { enemy.position.y = bases[index] + Math.sin(elapsed * 1.8 + index) * .045; this.animateCat(enemy, elapsed, index + 1.2); });
     const target = this.targetRing.userData.target;
     if (target?.visible) {
       this.targetRing.position.set(target.position.x, target.position.y - .88, target.position.z);

@@ -4,6 +4,8 @@ export function difficultyForFloor(floor) {
 
 export function scaleEnemy(template, floor, boss = false, multipliers = {}) {
   const difficulty = difficultyForFloor(floor);
+  const growthLevel = Math.floor(Math.max(0, floor - 1) / 5);
+  const skillPower = 1 + Math.floor(Math.sqrt(growthLevel));
   const bossMultiplier = boss ? 1.25 : 1;
   const hpMultiplier = multipliers.hp ?? 1;
   const attackMultiplier = multipliers.attack ?? 1;
@@ -13,6 +15,8 @@ export function scaleEnemy(template, floor, boss = false, multipliers = {}) {
     maxHp,
     hp: maxHp,
     attack: Math.max(1, Math.round((template.attack + Math.pow(floor, 0.55) * 0.22 + (boss ? 1 : 0)) * attackMultiplier)),
+    growthLevel,
+    skillPower,
     shield: 0,
     buffs: []
   };

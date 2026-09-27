@@ -2,6 +2,7 @@ import { cats } from '../data/cats.js';
 import { skills } from '../data/skills.js';
 import { buffs } from '../data/buffs.js';
 import { relics } from '../data/relics.js';
+import { scaleSkillEffect, skillGrowthBonus } from '../systems/SkillGrowth.js';
 
 const floorNames = { BATTLE: '寻常层', ELITE: '凶险层', REST: '月台', SHOP: '猫市', EVENT: '奇遇', TREASURE: '秘藏', BOSS: '镇层者' };
 
@@ -19,6 +20,8 @@ export class UIManager {
         <aside class="weekly"><span>本周法则</span><b data-ref="weekly">月潮</b></aside>
         <section class="battle-arena is-hidden" data-ref="battleArena">
           <div class="floor-objective"><span data-ref="battleKind">寻常层</span><b>击退守层猫客</b></div>
+          <button class="battle-view-toggle" data-ref="battleView" data-action="view" aria-label="切换战斗视角，当前正面" title="切换战斗视角">视角 · 正面</button>
+          <button class="auto-combo-toggle" data-ref="autoCombo" data-action="autoCombo" aria-pressed="false" aria-label="辅助技能后自动攻击和追击，当前关闭" title="辅助技能后自动完成攻击与追击"><span>□</span> 攻击+追击</button>
           <div class="enemy-seats" data-ref="enemySeats"></div>
         </section>
         <section class="player-dock is-hidden" data-ref="playerDock">
@@ -26,7 +29,7 @@ export class UIManager {
             <span class="portrait" data-ref="portrait">🐈</span>
             <div class="identity"><b data-ref="catName"></b><small data-ref="passive"></small></div>
             <div class="stat"><span>生命</span><b data-ref="playerHp"></b></div>
-            <div class="stat"><span>能量</span><b data-ref="energy"></b></div>
+            <div class="stat" data-ref="energyStat"><span data-ref="energyLabel">能量</span><b data-ref="energy"></b></div>
             <div class="stat shield"><span>护盾</span><b data-ref="shield"></b></div>
           </div>
           <div class="buff-line" data-ref="playerBuffs"></div>
@@ -75,22 +78,49 @@ export class UIManager {
   }
   updatePlayer(player, battle) {
     this.refs.playerHp.textContent = `${player.hp}/${player.maxHp}`; this.refs.energy.textContent = `${player.energy}/${player.maxEnergy}`; this.refs.shield.textContent = player.shield || '—';
+    const pursuit = battle?.state?.phase === 'PLAYER_TURN' && battle.state.pursuitReady;
+    const fallback = battle?.state?.phase === 'PLAYER_TURN' && player.energy === 0 && battle.state.offensiveActionsUsed === 0;
+    this.refs.energyLabel.textContent = pursuit ? '能量 · 可追击' : fallback ? '能量 · 保底爪击' : '能量'; this.refs.energyStat.classList.toggle('is-pursuit', pursuit || fallback);
     this.refs.playerBuffs.innerHTML = this.buffHTML(player.buffs);
     if (battle) this.renderSkills(player, battle);
   }
   renderSkills(player, battle = null) {
     this.refs.skills.innerHTML = player.skills.map((id) => {
       const skill = skills[id]; const cost = battle ? battle.skillSystem.cost(id, player, battle.state) : skill.cost;
-      const disabled = !battle || battle.state?.phase !== 'PLAYER_TURN' || !battle.skillSystem.canUse(id, player, battle.state);
-      const support = skill.effects.every((effect) => effect.target === 'self' && effect.type !== 'damage');
-      const bonus = player.skillUpgrades[id] || 0;
-      return `<button class="skill" data-action="skill" data-value="${id}" ${disabled ? 'disabled' : ''}><span>${skill.icon}</span><b>${skill.name}${bonus ? `<sup>+${bonus}</sup>` : ''}</b><small>${skill.shortDescription}${support ? ' · 辅助' : ''}</small><em>${cost}⚡</em></button>`;
+      const disabled = !battle || battle.state?.phase !== 'PLAYER_TURN' || battle.state?.comboRunning || !battle.skillSystem.canUse(id, player, battle.state);
+      const support = skill.effects.every((effect) => effect.type !== 'damage');
+      const level = player.skillUpgrades[id] || 0;
+      const bonus = skillGrowthBonus(level);
+      return `<button class="skill" data-action="skill" data-value="${id}" ${disabled ? 'disabled' : ''}><span>${skill.icon}</span><b>${skill.name}${level ? `<sup>Lv.${level}${bonus !== level ? ` · +${bonus}` : ''}</sup>` : ''}</b><small>${this.skillDescription(skill, level)}${support ? ' · 辅助' : ''}</small><em>${cost}⚡</em></button>`;
     }).join('');
+  }
+  skillDescription(skill, level) {
+    return skill.effects.map((effect) => {
+      const scaled = scaleSkillEffect(effect, level);
+      if (scaled.type === 'damage') return `${scaled.value}伤`;
+      if (scaled.type === 'heal') return `回复${scaled.value}血`;
+      if (scaled.type === 'shield') return `${scaled.value}盾`;
+      if (scaled.type === 'gainEnergy') return `${scaled.value}能量`;
+      if (scaled.type === 'loseEnergy') return `削减${scaled.value}能量`;
+      if (scaled.type === 'applyBuff') return `${buffs[scaled.buffId]?.name || scaled.buffId}${scaled.stacks}层${scaled.duration ? `·${scaled.duration}回合` : ''}`;
+      return '';
+    }).filter(Boolean).join('，');
   }
   showEnemies(enemies, state, kind) {
     this.refs.battleArena.classList.remove('is-hidden');
     this.refs.battleKind.textContent = kind;
     this.updateEnemies(enemies, state);
+  }
+  setBattleView(label) {
+    this.refs.battleView.textContent = `视角 · ${label}`;
+    this.refs.battleView.setAttribute('aria-label', `切换战斗视角，当前${label}`);
+  }
+  setAutoCombo(enabled, running = false) {
+    this.refs.autoCombo.classList.toggle('is-active', enabled);
+    this.refs.autoCombo.classList.toggle('is-running', running);
+    this.refs.autoCombo.setAttribute('aria-pressed', String(enabled));
+    this.refs.autoCombo.setAttribute('aria-label', `辅助技能后自动攻击和追击，当前${enabled ? '开启' : '关闭'}`);
+    this.refs.autoCombo.innerHTML = `<span>${enabled ? '✓' : '□'}</span> ${running ? '连击中' : '攻击+追击'}`;
   }
   updateEnemies(enemies, state) {
     this.refs.enemySeats.innerHTML = enemies.map((enemy, index) => {
@@ -100,7 +130,7 @@ export class UIManager {
       const intent = state.intents?.[index]?.label || '—';
       return `<button class="enemy-seat seat-${index + 1}${selected ? ' is-target' : ''}${recommended ? ' is-recommended' : ''}${active ? ' is-active' : ''}${enemy.hp <= 0 ? ' is-defeated' : ''}" data-action="target" data-value="${index}" ${enemy.hp <= 0 ? 'disabled' : ''} style="--enemy:${enemy.color}" ${recommended ? `title="${state.recommendationReason}" aria-label="推荐攻击 ${enemy.name}：${state.recommendationReason}"` : ''}>
         <span class="seat-no">${index + 2}</span><span class="enemy-avatar">${enemy.icon}</span>
-        <span class="enemy-copy"><small>${enemy.title || '守层猫客'}</small><b>${enemy.name}</b></span>
+        <span class="enemy-copy"><small>${enemy.title || '守层猫客'}${enemy.growthLevel ? ` · ${enemy.growthLevel}阶` : ''}</small><b>${enemy.name}</b></span>
         <span class="enemy-intent">${intent}</span>
         <span class="mini-bar"><i style="width:${Math.max(0, enemy.hp / enemy.maxHp * 100)}%"></i></span>
         <span class="enemy-health">${enemy.hp}/${enemy.maxHp}${enemy.shield ? ` · ${enemy.shield}盾` : ''}</span>
@@ -140,6 +170,7 @@ export class UIManager {
     const changes = [];
     if (before.hp !== after.hp || before.maxHp !== after.maxHp) changes.push(`<span class="health">生命 <b>${before.hp}/${before.maxHp}</b><i>→</i><strong>${after.hp}/${after.maxHp}</strong></span>`);
     if (before.energy !== after.energy || before.maxEnergy !== after.maxEnergy) changes.push(`<span class="energy">能量 <b>${before.energy}/${before.maxEnergy}</b><i>→</i><strong>${after.energy}/${after.maxEnergy}</strong></span>`);
+    if (before.heartGuard !== after.heartGuard) changes.push(`<span class="shield">开战护盾 <b>${before.heartGuard}</b><i>→</i><strong>${after.heartGuard}</strong></span>`);
     const node = document.createElement('div'); node.className = 'reward-result';
     node.innerHTML = `<em>${reward.icon}</em><small>已获得</small><h3>${reward.name}</h3><div>${changes.join('') || `<span class="effect">${reward.description}</span>`}</div>`;
     this.refs.toasts.appendChild(node);

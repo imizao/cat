@@ -9,6 +9,13 @@ export class SceneManager {
     this.camera = new THREE.PerspectiveCamera(38, 1, 0.1, 120);
     this.camera.position.set(8.8, 5.2, 12.8);
     this.cameraTarget = { x: 0, y: .8, z: 0 };
+    this.battleViews = [
+      { id: 'front', label: '正面', x: 0, y: 5.45, z: 14.8, tx: 0, ty: 1.45, tz: 0, fov: 42 },
+      { id: 'tactical', label: '俯瞰', x: 0, y: 9.1, z: 14.9, tx: 0, ty: .85, tz: -.15, fov: 44 },
+      { id: 'cinematic', label: '斜侧', x: 5.2, y: 5.8, z: 14.5, tx: -.15, ty: 1.35, tz: -.05, fov: 42 }
+    ];
+    this.battleViewIndex = 0;
+    this.cameraTransition = 0;
     this.camera.lookAt(0, 0.8, 0);
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
@@ -36,20 +43,31 @@ export class SceneManager {
   }
   setView(mode) {
     const destination = mode === 'battle'
-      ? { x: 0, y: 5.35, z: 13.5, tx: 0, ty: 1.55, tz: 0 }
-      : { x: 8.8, y: 5.2, z: 12.8, tx: 0, ty: .8, tz: 0 };
-    const start = { x: this.camera.position.x, y: this.camera.position.y, z: this.camera.position.z, tx: this.cameraTarget.x, ty: this.cameraTarget.y, tz: this.cameraTarget.z };
+      ? this.currentBattleView()
+      : { x: 8.8, y: 5.2, z: 12.8, tx: 0, ty: .8, tz: 0, fov: 38 };
+    const start = { x: this.camera.position.x, y: this.camera.position.y, z: this.camera.position.z, tx: this.cameraTarget.x, ty: this.cameraTarget.y, tz: this.cameraTarget.z, fov: this.camera.fov };
+    const transition = ++this.cameraTransition;
     this.animations.tween({ duration: 480, update: (t) => {
+      if (transition !== this.cameraTransition) return;
+      const eased = 1 - Math.pow(1 - t, 3);
       this.camera.position.set(
-        start.x + (destination.x - start.x) * t,
-        start.y + (destination.y - start.y) * t,
-        start.z + (destination.z - start.z) * t
+        start.x + (destination.x - start.x) * eased,
+        start.y + (destination.y - start.y) * eased,
+        start.z + (destination.z - start.z) * eased
       );
-      this.cameraTarget.x = start.tx + (destination.tx - start.tx) * t;
-      this.cameraTarget.y = start.ty + (destination.ty - start.ty) * t;
-      this.cameraTarget.z = start.tz + (destination.tz - start.tz) * t;
+      this.cameraTarget.x = start.tx + (destination.tx - start.tx) * eased;
+      this.cameraTarget.y = start.ty + (destination.ty - start.ty) * eased;
+      this.cameraTarget.z = start.tz + (destination.tz - start.tz) * eased;
+      this.camera.fov = start.fov + (destination.fov - start.fov) * eased;
+      this.camera.updateProjectionMatrix();
       this.camera.lookAt(this.cameraTarget.x, this.cameraTarget.y, this.cameraTarget.z);
     }});
+  }
+  currentBattleView() { return this.battleViews[this.battleViewIndex]; }
+  cycleBattleView() {
+    this.battleViewIndex = (this.battleViewIndex + 1) % this.battleViews.length;
+    this.setView('battle');
+    return this.currentBattleView();
   }
   start(onFrame) {
     const loop = (now) => {

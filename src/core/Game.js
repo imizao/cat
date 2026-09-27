@@ -14,13 +14,17 @@ import { RewardSystem } from '../systems/RewardSystem.js';
 import { RelicSystem } from '../systems/RelicSystem.js';
 import { SaveSystem } from '../systems/SaveSystem.js';
 import { UIManager } from '../ui/UIManager.js';
-import { gainHealth, healthOverflowLimit } from '../systems/ResourceRules.js';
+import { gainHealth } from '../systems/ResourceRules.js';
+
+const AUTO_COMBO_KEY = 'moonpaw-auto-combo';
 
 export class Game {
   constructor(root) {
     this.events = new EventBus(); this.animations = new AnimationManager(); this.saveSystem = new SaveSystem();
     this.debugEnabled = new URLSearchParams(location.search).get('debug') === '1';
     this.ui = new UIManager(root, this.events, this.debugEnabled);
+    this.autoCombo = localStorage.getItem(AUTO_COMBO_KEY) === '1';
+    this.ui.setAutoCombo(this.autoCombo);
     this.audio = new AudioManager(this.events);
     this.ui.setSound(this.audio.enabled);
     this.scene = new SceneManager(this.ui.refs.scene, this.animations);
@@ -38,7 +42,10 @@ export class Game {
     this.events.on('skill:cast', ({ skill }) => this.ui.showSkill(skill));
     this.events.on('combat:impact', ({ strong }) => this.ui.impact(strong));
     this.events.on('enemy:damage', ({ target, hpLoss, absorbed, visualDelay = 0 }) => this.afterVisual(visualDelay, () => this.ui.float(hpLoss ? `-${hpLoss}` : `挡 ${absorbed}`, 'damage', target?.encounterIndex)));
+    this.events.on('enemy:heal', ({ target, amount }) => { if (amount) this.ui.float(`+${amount}`, 'heal', target?.encounterIndex); });
+    this.events.on('enemy:shield', ({ target, amount }) => { if (amount) this.ui.float(`+${amount}盾`, 'shield-float', target?.encounterIndex); });
     this.events.on('player:damage', ({ hpLoss, absorbed, visualDelay = 0 }) => { this.afterVisual(visualDelay, () => this.ui.float(hpLoss ? `-${hpLoss}` : `挡 ${absorbed}`, 'damage')); this.ui.updatePlayer(this.player, this.battle); });
+    this.events.on('player:energy', ({ amount, visualDelay = 0 }) => { this.afterVisual(visualDelay, () => this.ui.float(`+${amount}能量`, 'energy-float')); this.ui.updatePlayer(this.player, this.battle); });
     this.events.on('player:heal', ({ amount }) => { if (amount) this.ui.float(`+${amount}`, 'heal'); });
     this.events.on('player:shield', ({ amount }) => this.ui.float(`+${amount}盾`, 'shield-float'));
     this.events.on('battle:end', () => this.onVictory());
@@ -58,20 +65,26 @@ export class Game {
     if (action === 'selectCat') { this.startRun(this.createRun(value)); return; }
     if (action === 'climb' && this.mode === 'READY') this.enterFloor(this.currentFloor + 1);
     if (action === 'skill' && this.mode === 'BATTLE') {
-      if (this.battle.useSkill(value) && this.battle.state.phase === BattlePhase.ENEMY_TURN) this.runEnemySequence();
+      if (this.battle.state.comboRunning) return;
+      const support = this.battle.skillSystem.isSupport(value);
+      if (this.battle.useSkill(value)) {
+        if (this.autoCombo && support && this.battle.state.phase === BattlePhase.PLAYER_TURN) this.runAutoCombo();
+        else if (this.battle.state.phase === BattlePhase.ENEMY_TURN) this.runEnemySequence();
+      }
     }
+    if (action === 'autoCombo') this.setAutoCombo(!this.autoCombo);
+    if (action === 'view' && this.mode === 'BATTLE') this.ui.setBattleView(this.scene.cycleBattleView().label);
     if (action === 'target' && this.mode === 'BATTLE') this.battle.selectTarget(Number(value));
     if (action === 'reward' && this.mode === 'REWARD') this.chooseReward(Number(value));
     if (action === 'leaveFloor' && this.mode === 'MOMENT') this.enterFloor(this.currentFloor + 1);
   }
   createRun(catId) {
     const cat = getCat(catId); const seed = crypto.getRandomValues(new Uint32Array(1))[0];
-    return { version: 1, worldSeed: seed, currentFloor: 0, currency: 0, essence: 0, catId, player: { hp: cat.maxHp, maxHp: cat.maxHp, energy: cat.maxEnergy, maxEnergy: cat.maxEnergy, shield: 0, passiveId: cat.passive.id, skills: [...cat.skills], skillUpgrades: {}, costModifiers: {}, relics: [], buffs: [] } };
+    return { version: 1, worldSeed: seed, currentFloor: 0, currency: 0, essence: 0, catId, player: { hp: cat.maxHp, maxHp: cat.maxHp, energy: cat.maxEnergy, maxEnergy: cat.maxEnergy, baseMaxEnergy: cat.maxEnergy, heartGuard: 0, shield: 0, passiveId: cat.passive.id, skills: [...cat.skills], skillUpgrades: {}, costModifiers: {}, relics: [], buffs: [] } };
   }
   startRun(data) {
     this.worldSeed = data.worldSeed; this.currentFloor = data.currentFloor; this.currency = data.currency || 0; this.essence = data.essence || 0;
-    this.cat = getCat(data.catId); this.player = { ...data.player, buffs: [], shield: 0, energy: data.player.maxEnergy };
-    this.player.hp = Math.min(this.player.hp, healthOverflowLimit(this.player));
+    this.cat = getCat(data.catId); this.player = { ...data.player, baseMaxEnergy: data.player.baseMaxEnergy || this.cat.maxEnergy, heartGuard: data.player.heartGuard || 0, buffs: [], shield: 0, energy: Number.isFinite(data.player.energy) ? data.player.energy : data.player.maxEnergy };
     this.relics = new RelicSystem(); this.rewards = new RewardSystem(this.worldSeed);
     this.battle = new BattleSystem(this.events, this.relics, weeklyModifier);
     if (this.tower) this.scene.scene.remove(this.tower.root);
@@ -102,6 +115,7 @@ export class Game {
     const enemyParty = createEnemyParty(floor);
     this.mode = 'BATTLE';
     this.tower.setVisible(false); this.interior.show(floor); this.scene.setView('battle');
+    this.ui.setBattleView(this.scene.currentBattleView().label);
     this.actors.setPlayerVisible(true); this.actors.showEnemies(enemyParty);
     const state = this.battle.start(this.player, enemyParty, floor.index);
     this.ui.showEnemies(enemyParty, state, this.ui.floorName(floor.type)); this.ui.updatePlayer(this.player, this.battle); this.persist();
@@ -112,6 +126,40 @@ export class Game {
       const hasNext = this.battle.enemyTurn();
       if (hasNext && this.battle.state.phase === BattlePhase.ENEMY_TURN) this.runEnemySequence();
     }});
+  }
+  setAutoCombo(enabled) {
+    this.autoCombo = enabled;
+    localStorage.setItem(AUTO_COMBO_KEY, enabled ? '1' : '0');
+    if (this.battle?.state) this.battle.state.comboRunning = false;
+    this.ui.setAutoCombo(enabled);
+    if (this.mode === 'BATTLE') this.ui.updatePlayer(this.player, this.battle);
+  }
+  runAutoCombo() {
+    const state = this.battle.state;
+    if (!this.autoCombo || this.mode !== 'BATTLE' || state.phase !== BattlePhase.PLAYER_TURN) return;
+    state.comboRunning = true;
+    this.ui.setAutoCombo(true, true);
+    this.ui.updatePlayer(this.player, this.battle);
+    this.afterVisual(520, () => {
+      if (!this.autoCombo || this.mode !== 'BATTLE' || state !== this.battle.state || state.phase !== BattlePhase.PLAYER_TURN) {
+        state.comboRunning = false;
+        this.ui.setAutoCombo(this.autoCombo);
+        return;
+      }
+      const skillId = this.battle.bestAttackSkill();
+      if (!skillId || !this.battle.useSkill(skillId)) {
+        state.comboRunning = false;
+        this.ui.setAutoCombo(this.autoCombo);
+        this.ui.updatePlayer(this.player, this.battle);
+        return;
+      }
+      if (state.phase === BattlePhase.PLAYER_TURN) this.runAutoCombo();
+      else {
+        state.comboRunning = false;
+        this.ui.setAutoCombo(this.autoCombo);
+        if (state.phase === BattlePhase.ENEMY_TURN) this.runEnemySequence();
+      }
+    });
   }
   onVictory() {
     this.mode = 'VICTORY'; this.currency += this.battle.state.floor % 10 === 0 ? 5 : 1; this.ui.updateHud(this);
@@ -126,9 +174,9 @@ export class Game {
   chooseReward(index) {
     const reward = this.currentRewards[index]; if (!reward) return;
     this.mode = 'REWARD_RESULT';
-    const before = { hp: this.player.hp, maxHp: this.player.maxHp, energy: this.player.energy, maxEnergy: this.player.maxEnergy };
+    const before = { hp: this.player.hp, maxHp: this.player.maxHp, energy: this.player.energy, maxEnergy: this.player.maxEnergy, heartGuard: this.player.heartGuard || 0 };
     this.rewards.apply(reward, this.player); this.events.emit('reward:selected', reward);
-    const after = { hp: this.player.hp, maxHp: this.player.maxHp, energy: this.player.energy, maxEnergy: this.player.maxEnergy };
+    const after = { hp: this.player.hp, maxHp: this.player.maxHp, energy: this.player.energy, maxEnergy: this.player.maxEnergy, heartGuard: this.player.heartGuard || 0 };
     this.ui.hideOverlay(); this.ui.updatePlayer(this.player); this.ui.showRewardResult(reward, before, after); this.persist();
     this.animations.tween({ duration: 1150, update: () => {}, complete: () => this.enterFloor(this.currentFloor + 1) });
   }
